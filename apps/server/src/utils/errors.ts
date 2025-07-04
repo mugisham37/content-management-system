@@ -4,28 +4,23 @@
 
 import { Response } from 'express'
 import { ZodError } from 'zod'
-import { Prisma } from '@cms-platform/database'
 import { Logger } from './logger'
 
 // =============================================================================
-// CUSTOM ERROR CLASSES
+// ENHANCED ERROR CLASSES
 // =============================================================================
 
-export class AppError extends Error {
-  public readonly statusCode: number
-  public readonly isOperational: boolean
-  public readonly code?: string
-  public readonly details?: any
+export class ApiError extends Error {
+  public statusCode: number
+  public isOperational: boolean
+  public code?: string
+  public details?: any
+  public tenantId?: string
+  public userId?: string
+  public requestId?: string
 
-  constructor(
-    message: string,
-    statusCode: number = 500,
-    code?: string,
-    details?: any,
-    isOperational: boolean = true
-  ) {
+  constructor(statusCode: number, message: string, code?: string, details?: any, isOperational = true) {
     super(message)
-    
     this.statusCode = statusCode
     this.isOperational = isOperational
     this.code = code
@@ -33,53 +28,148 @@ export class AppError extends Error {
 
     Error.captureStackTrace(this, this.constructor)
   }
+
+  // Static factory methods for common errors
+  static badRequest(message: string, details?: any) {
+    return new ApiError(400, message, "BAD_REQUEST", details)
+  }
+
+  static unauthorized(message = "Unauthorized") {
+    return new ApiError(401, message, "UNAUTHORIZED")
+  }
+
+  static forbidden(message = "Forbidden") {
+    return new ApiError(403, message, "FORBIDDEN")
+  }
+
+  static notFound(message = "Resource not found") {
+    return new ApiError(404, message, "NOT_FOUND")
+  }
+
+  static conflict(message: string, details?: any) {
+    return new ApiError(409, message, "CONFLICT", details)
+  }
+
+  static validationError(message: string, details?: any) {
+    return new ApiError(422, message, "VALIDATION_ERROR", details)
+  }
+
+  static tooManyRequests(message = "Too many requests") {
+    return new ApiError(429, message, "TOO_MANY_REQUESTS")
+  }
+
+  static internal(message = "Internal server error") {
+    return new ApiError(500, message, "INTERNAL_ERROR")
+  }
+
+  static serviceUnavailable(message = "Service unavailable") {
+    return new ApiError(503, message, "SERVICE_UNAVAILABLE")
+  }
+
+  // Add context to error
+  withContext(context: { tenantId?: string; userId?: string; requestId?: string }) {
+    this.tenantId = context.tenantId
+    this.userId = context.userId
+    this.requestId = context.requestId
+    return this
+  }
 }
 
-export class ValidationError extends AppError {
+// Specialized error classes extending ApiError
+export class ValidationError extends ApiError {
   constructor(message: string, details?: any) {
-    super(message, 400, 'VALIDATION_ERROR', details)
+    super(422, message, "VALIDATION_ERROR", details)
   }
 }
 
-export class AuthenticationError extends AppError {
-  constructor(message: string = 'Authentication required') {
-    super(message, 401, 'AUTHENTICATION_ERROR')
+export class DatabaseError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(500, message, "DATABASE_ERROR", details)
   }
 }
 
-export class AuthorizationError extends AppError {
-  constructor(message: string = 'Insufficient permissions') {
-    super(message, 403, 'AUTHORIZATION_ERROR')
+export class AuthenticationError extends ApiError {
+  constructor(message = "Authentication failed") {
+    super(401, message, "AUTHENTICATION_ERROR")
   }
 }
 
-export class NotFoundError extends AppError {
+export class AuthorizationError extends ApiError {
+  constructor(message = "Access denied") {
+    super(403, message, "AUTHORIZATION_ERROR")
+  }
+}
+
+export class TenantError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(403, message, "TENANT_ERROR", details)
+  }
+}
+
+export class ContentTypeError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(400, message, "CONTENT_TYPE_ERROR", details)
+  }
+}
+
+export class WorkflowError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(400, message, "WORKFLOW_ERROR", details)
+  }
+}
+
+export class MediaError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(400, message, "MEDIA_ERROR", details)
+  }
+}
+
+export class PluginError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(500, message, "PLUGIN_ERROR", details)
+  }
+}
+
+export class WebhookError extends ApiError {
+  constructor(message: string, details?: any) {
+    super(500, message, "WEBHOOK_ERROR", details)
+  }
+}
+
+export class NotFoundError extends ApiError {
   constructor(resource: string = 'Resource') {
-    super(`${resource} not found`, 404, 'NOT_FOUND')
+    super(404, `${resource} not found`, 'NOT_FOUND')
   }
 }
 
-export class ConflictError extends AppError {
+export class ConflictError extends ApiError {
   constructor(message: string) {
-    super(message, 409, 'CONFLICT')
+    super(409, message, 'CONFLICT')
   }
 }
 
-export class RateLimitError extends AppError {
+export class RateLimitError extends ApiError {
   constructor(message: string = 'Too many requests') {
-    super(message, 429, 'RATE_LIMIT_EXCEEDED')
+    super(429, message, 'RATE_LIMIT_EXCEEDED')
   }
 }
 
-export class DatabaseError extends AppError {
-  constructor(message: string, details?: any) {
-    super(message, 500, 'DATABASE_ERROR', details)
-  }
-}
-
-export class ExternalServiceError extends AppError {
+export class ExternalServiceError extends ApiError {
   constructor(service: string, message: string) {
-    super(`${service}: ${message}`, 502, 'EXTERNAL_SERVICE_ERROR')
+    super(502, `${service}: ${message}`, 'EXTERNAL_SERVICE_ERROR')
+  }
+}
+
+// Legacy AppError for backward compatibility
+export class AppError extends ApiError {
+  constructor(
+    message: string,
+    statusCode: number = 500,
+    code?: string,
+    details?: any,
+    isOperational: boolean = true
+  ) {
+    super(statusCode, message, code, details, isOperational)
   }
 }
 
@@ -98,6 +188,9 @@ interface ErrorResponse {
     timestamp: string
     path?: string
     method?: string
+    tenantId?: string
+    userId?: string
+    requestId?: string
   }
 }
 
@@ -115,8 +208,9 @@ export function handleZodError(error: ZodError): ValidationError {
   return new ValidationError('Validation failed', details)
 }
 
-export function handlePrismaError(error: any): AppError {
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+export function handlePrismaError(error: any): ApiError {
+  // Handle known Prisma error codes
+  if (error.code) {
     switch (error.code) {
       case 'P2002':
         return new ConflictError('A record with this data already exists')
@@ -126,24 +220,35 @@ export function handlePrismaError(error: any): AppError {
         return new ValidationError('Foreign key constraint failed')
       case 'P2014':
         return new ValidationError('Invalid ID provided')
+      case 'P2016':
+        return new ValidationError('Query interpretation error')
+      case 'P2021':
+        return new DatabaseError('Table does not exist')
+      case 'P2022':
+        return new DatabaseError('Column does not exist')
       default:
         return new DatabaseError(`Database error: ${error.message}`, { code: error.code })
     }
   }
 
-  if (error instanceof Prisma.PrismaClientUnknownRequestError) {
+  // Handle different Prisma error types by name
+  if (error.name?.includes('PrismaClientKnownRequestError')) {
+    return new DatabaseError('Known database request error')
+  }
+
+  if (error.name?.includes('PrismaClientUnknownRequestError')) {
     return new DatabaseError('Unknown database error occurred')
   }
 
-  if (error instanceof Prisma.PrismaClientRustPanicError) {
+  if (error.name?.includes('PrismaClientRustPanicError')) {
     return new DatabaseError('Database engine error')
   }
 
-  if (error instanceof Prisma.PrismaClientInitializationError) {
+  if (error.name?.includes('PrismaClientInitializationError')) {
     return new DatabaseError('Database connection failed')
   }
 
-  if (error instanceof Prisma.PrismaClientValidationError) {
+  if (error.name?.includes('PrismaClientValidationError')) {
     return new ValidationError('Invalid query parameters')
   }
 
@@ -151,26 +256,37 @@ export function handlePrismaError(error: any): AppError {
 }
 
 export function createErrorResponse(
-  error: AppError | Error,
+  error: ApiError | Error,
   req?: any,
   includeStack: boolean = false
 ): ErrorResponse {
-  const isAppError = error instanceof AppError
+  const isApiError = error instanceof ApiError
   
   const response: ErrorResponse = {
     success: false,
     error: {
       message: error.message,
-      code: isAppError ? error.code : 'INTERNAL_ERROR',
-      statusCode: isAppError ? error.statusCode : 500,
+      code: isApiError ? error.code : 'INTERNAL_ERROR',
+      statusCode: isApiError ? error.statusCode : 500,
       timestamp: new Date().toISOString(),
       path: req?.path,
       method: req?.method
     }
   }
 
-  if (isAppError && error.details) {
-    response.error.details = error.details
+  if (isApiError) {
+    if (error.details) {
+      response.error.details = error.details
+    }
+    if (error.tenantId) {
+      response.error.tenantId = error.tenantId
+    }
+    if (error.userId) {
+      response.error.userId = error.userId
+    }
+    if (error.requestId) {
+      response.error.requestId = error.requestId
+    }
   }
 
   if (includeStack && error.stack) {
@@ -182,23 +298,29 @@ export function createErrorResponse(
 
 export function sendErrorResponse(
   res: Response,
-  error: AppError | Error,
+  error: ApiError | Error,
   req?: any
 ): void {
-  const isAppError = error instanceof AppError
-  const statusCode = isAppError ? error.statusCode : 500
+  const isApiError = error instanceof ApiError
+  const statusCode = isApiError ? error.statusCode : 500
   const includeStack = process.env.NODE_ENV === 'development'
 
-  // Log the error
+  // Log the error with context
+  const logContext = {
+    statusCode,
+    path: req?.path,
+    method: req?.method,
+    ip: req?.ip,
+    userAgent: req?.get('User-Agent'),
+    tenantId: isApiError ? error.tenantId : undefined,
+    userId: isApiError ? error.userId : undefined,
+    requestId: isApiError ? error.requestId : undefined
+  }
+
   if (statusCode >= 500) {
     Logger.logError(error, 'Server Error')
   } else if (statusCode >= 400) {
-    Logger.warn(`Client Error: ${error.message}`, {
-      statusCode,
-      path: req?.path,
-      method: req?.method,
-      ip: req?.ip
-    })
+    Logger.warn(`Client Error: ${error.message}`, logContext)
   }
 
   const errorResponse = createErrorResponse(error, req, includeStack)
@@ -209,7 +331,7 @@ export function sendErrorResponse(
 // ERROR PROCESSING UTILITIES
 // =============================================================================
 
-export function processError(error: any): AppError {
+export function processError(error: any): ApiError {
   // Handle Zod validation errors
   if (error instanceof ZodError) {
     return handleZodError(error)
@@ -229,6 +351,10 @@ export function processError(error: any): AppError {
     return new AuthenticationError('Token expired')
   }
 
+  if (error.name === 'NotBeforeError') {
+    return new AuthenticationError('Token not active')
+  }
+
   // Handle Multer errors (file upload)
   if (error.code === 'LIMIT_FILE_SIZE') {
     return new ValidationError('File size too large')
@@ -236,6 +362,10 @@ export function processError(error: any): AppError {
 
   if (error.code === 'LIMIT_UNEXPECTED_FILE') {
     return new ValidationError('Unexpected file field')
+  }
+
+  if (error.code === 'LIMIT_FILE_COUNT') {
+    return new ValidationError('Too many files')
   }
 
   // Handle MongoDB-like errors (if using MongoDB)
@@ -252,19 +382,28 @@ export function processError(error: any): AppError {
     return new ExternalServiceError('External Service', 'Request timeout')
   }
 
-  // If it's already an AppError, return as is
-  if (error instanceof AppError) {
+  if (error.code === 'ENOTFOUND') {
+    return new ExternalServiceError('External Service', 'Service not found')
+  }
+
+  // Handle axios errors
+  if (error.response) {
+    return new ExternalServiceError('HTTP Request', `${error.response.status}: ${error.response.statusText}`)
+  }
+
+  // If it's already an ApiError, return as is
+  if (error instanceof ApiError) {
     return error
   }
 
   // Default to internal server error
-  return new AppError(
+  return new ApiError(
+    500,
     process.env.NODE_ENV === 'production' 
       ? 'Internal server error' 
       : error.message || 'Unknown error occurred',
-    500,
     'INTERNAL_ERROR',
-    process.env.NODE_ENV === 'development' ? { originalError: error.message } : undefined,
+    process.env.NODE_ENV === 'development' ? { originalError: error.message, stack: error.stack } : undefined,
     false
   )
 }
@@ -288,21 +427,57 @@ export function asyncHandler<T extends any[], R>(
 // =============================================================================
 
 export function isOperationalError(error: Error): boolean {
-  if (error instanceof AppError) {
+  if (error instanceof ApiError) {
     return error.isOperational
   }
   return false
 }
 
 export function shouldLogError(error: Error): boolean {
-  if (error instanceof AppError) {
+  if (error instanceof ApiError) {
     return error.statusCode >= 500
   }
   return true
+}
+
+export function isTenantError(error: Error): boolean {
+  return error instanceof TenantError
+}
+
+export function isValidationError(error: Error): boolean {
+  return error instanceof ValidationError
+}
+
+export function isAuthenticationError(error: Error): boolean {
+  return error instanceof AuthenticationError
+}
+
+export function isAuthorizationError(error: Error): boolean {
+  return error instanceof AuthorizationError
+}
+
+// =============================================================================
+// ERROR CONTEXT HELPERS
+// =============================================================================
+
+export function addErrorContext(
+  error: ApiError,
+  context: { tenantId?: string; userId?: string; requestId?: string }
+): ApiError {
+  return error.withContext(context)
+}
+
+export function createContextualError(
+  statusCode: number,
+  message: string,
+  context: { tenantId?: string; userId?: string; requestId?: string; code?: string; details?: any }
+): ApiError {
+  const error = new ApiError(statusCode, message, context.code, context.details)
+  return error.withContext(context)
 }
 
 // =============================================================================
 // EXPORTS
 // =============================================================================
 
-export default AppError
+export default ApiError
