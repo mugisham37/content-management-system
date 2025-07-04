@@ -34,8 +34,9 @@ model User {
   lastLoginAt  DateTime?
   
   // Role-based access control
-  role   UserRole   @default(USER)
-  roleId String
+  role   UserRole @default(USER)
+  roleId String?
+  roleModel Role? @relation(fields: [roleId], references: [id])
   
   // OAuth providers
   accounts Account[]
