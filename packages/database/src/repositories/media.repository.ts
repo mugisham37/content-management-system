@@ -323,7 +323,10 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
     }
     
     if (size) {
-      where.size = size
+      where.metadata = {
+        path: ['size'],
+        equals: size,
+      }
     }
 
     if (tenantId) {

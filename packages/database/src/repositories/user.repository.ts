@@ -1,9 +1,9 @@
 // =============================================================================
 // USER REPOSITORY - POSTGRESQL
 // =============================================================================
-// Enhanced user management with authentication and security features
+// User management with authentication and multi-tenant support
 
-import { PrismaClient, User, Prisma, UserRole, UserStatus } from '@prisma/client'
+import { PrismaClient, User, UserRole, UserStatus, Prisma } from '@prisma/client'
 import { BaseRepository } from './base.repository'
 import bcrypt from 'bcryptjs'
 
@@ -17,9 +17,6 @@ export interface UserWithRelations extends User {
   createdContents?: any[]
   updatedContents?: any[]
   publishedContents?: any[]
-  createdContentTypes?: any[]
-  uploadedMedia?: any[]
-  createdApiKeys?: any[]
 }
 
 export class UserRepository extends BaseRepository<User, UserCreateInput, UserUpdateInput> {
@@ -43,7 +40,7 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Find user by email or throw error
+   * Find user by email or throw
    */
   async findByEmailOrThrow(email: string, tenantId?: string): Promise<User> {
     const user = await this.findByEmail(email, tenantId)
@@ -69,11 +66,8 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   /**
    * Create user with hashed password
    */
-  async createWithHashedPassword(
-    data: Omit<UserCreateInput, 'password'> & { password: string },
-    saltRounds = 12
-  ): Promise<User> {
-    const hashedPassword = await bcrypt.hash(data.password, saltRounds)
+  async createWithHashedPassword(data: UserCreateInput & { password: string }): Promise<User> {
+    const hashedPassword = await bcrypt.hash(data.password, 12)
     
     return this.create({
       ...data,
@@ -82,21 +76,10 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Verify user password
-   */
-  async verifyPassword(userId: string, password: string): Promise<boolean> {
-    const user = await this.findByIdOrThrow(userId)
-    if (!user.password) {
-      return false
-    }
-    return bcrypt.compare(password, user.password)
-  }
-
-  /**
    * Update user password
    */
-  async updatePassword(userId: string, newPassword: string, saltRounds = 12): Promise<User> {
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
+  async updatePassword(userId: string, newPassword: string): Promise<User> {
+    const hashedPassword = await bcrypt.hash(newPassword, 12)
     
     return this.update(userId, {
       password: hashedPassword,
@@ -106,7 +89,15 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Update last login timestamp
+   * Verify user password
+   */
+  async verifyPassword(userId: string, password: string): Promise<boolean> {
+    const user = await this.findByIdOrThrow(userId)
+    return bcrypt.compare(password, user.password)
+  }
+
+  /**
+   * Update last login
    */
   async updateLastLogin(userId: string): Promise<User> {
     return this.update(userId, {
@@ -119,38 +110,37 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   /**
    * Increment login attempts
    */
-  async incrementLoginAttempts(userId: string, maxAttempts = 5, lockDuration = 2 * 60 * 60 * 1000): Promise<User> {
+  async incrementLoginAttempts(userId: string): Promise<User> {
     const user = await this.findByIdOrThrow(userId)
-    const newAttempts = user.loginAttempts + 1
-
-    const updateData: any = {
-      loginAttempts: newAttempts,
+    const loginAttempts = user.loginAttempts + 1
+    
+    // Lock account after 5 failed attempts for 2 hours
+    const updates: any = { loginAttempts }
+    if (loginAttempts >= 5) {
+      const lockUntil = new Date()
+      lockUntil.setHours(lockUntil.getHours() + 2)
+      updates.lockUntil = lockUntil
     }
 
-    // Lock account if max attempts reached
-    if (newAttempts >= maxAttempts) {
-      updateData.lockUntil = new Date(Date.now() + lockDuration)
-    }
-
-    return this.update(userId, updateData)
+    return this.update(userId, updates)
   }
 
   /**
-   * Check if user account is locked
+   * Reset login attempts
    */
-  async isAccountLocked(userId: string): Promise<boolean> {
-    const user = await this.findByIdOrThrow(userId)
-    return user.lockUntil ? user.lockUntil > new Date() : false
-  }
-
-  /**
-   * Unlock user account
-   */
-  async unlockAccount(userId: string): Promise<User> {
+  async resetLoginAttempts(userId: string): Promise<User> {
     return this.update(userId, {
       loginAttempts: 0,
       lockUntil: null,
     })
+  }
+
+  /**
+   * Check if user is locked
+   */
+  async isLocked(userId: string): Promise<boolean> {
+    const user = await this.findByIdOrThrow(userId)
+    return user.lockUntil ? user.lockUntil > new Date() : false
   }
 
   /**
@@ -163,9 +153,9 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Verify email with token
+   * Verify email
    */
-  async verifyEmailWithToken(token: string): Promise<User | null> {
+  async verifyEmail(token: string): Promise<User | null> {
     const user = await this.findFirst({
       emailVerificationToken: token,
     })
@@ -177,15 +167,14 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
     return this.update(user.id, {
       emailVerified: true,
       emailVerificationToken: null,
+      status: UserStatus.ACTIVE,
     })
   }
 
   /**
    * Set password reset token
    */
-  async setPasswordResetToken(userId: string, token: string, expiresIn = 60 * 60 * 1000): Promise<User> {
-    const expiresAt = new Date(Date.now() + expiresIn)
-    
+  async setPasswordResetToken(userId: string, token: string, expiresAt: Date): Promise<User> {
     return this.update(userId, {
       passwordResetToken: token,
       passwordResetExpires: expiresAt,
@@ -213,7 +202,7 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
       where.tenantId = tenantId
     }
 
-    return this.findMany(where)
+    return this.findMany(where, undefined, { createdAt: 'desc' })
   }
 
   /**
@@ -225,19 +214,83 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
       where.tenantId = tenantId
     }
 
-    return this.findMany(where)
+    return this.findMany(where, undefined, { createdAt: 'desc' })
   }
 
   /**
    * Find active users
    */
   async findActive(tenantId?: string): Promise<User[]> {
-    const where: any = { isActive: true }
+    const where: any = { 
+      isActive: true,
+      status: UserStatus.ACTIVE,
+    }
     if (tenantId) {
       where.tenantId = tenantId
     }
 
-    return this.findMany(where)
+    return this.findMany(where, undefined, { lastLoginAt: 'desc' })
+  }
+
+  /**
+   * Search users
+   */
+  async search(
+    query: string, 
+    tenantId?: string,
+    options: {
+      role?: UserRole
+      status?: UserStatus
+      limit?: number
+      offset?: number
+    } = {}
+  ): Promise<User[]> {
+    const { role, status, limit = 50, offset = 0 } = options
+
+    const where: any = {
+      OR: [
+        { email: { contains: query, mode: 'insensitive' } },
+        { firstName: { contains: query, mode: 'insensitive' } },
+        { lastName: { contains: query, mode: 'insensitive' } },
+      ],
+    }
+
+    if (role) {
+      where.role = role
+    }
+
+    if (status) {
+      where.status = status
+    }
+
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    try {
+      return await this.model.findMany({
+        where,
+        take: limit,
+        skip: offset,
+        orderBy: { createdAt: 'desc' },
+      })
+    } catch (error) {
+      this.handleError(error, 'search')
+    }
+  }
+
+  /**
+   * Update user role
+   */
+  async updateRole(userId: string, role: UserRole): Promise<User> {
+    return this.update(userId, { role })
+  }
+
+  /**
+   * Update user status
+   */
+  async updateStatus(userId: string, status: UserStatus): Promise<User> {
+    return this.update(userId, { status })
   }
 
   /**
@@ -261,89 +314,31 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Change user role
+   * Suspend user
    */
-  async changeRole(userId: string, role: UserRole): Promise<User> {
-    return this.update(userId, { role })
+  async suspend(userId: string): Promise<User> {
+    return this.update(userId, {
+      status: UserStatus.SUSPENDED,
+    })
   }
 
   /**
-   * Search users by name or email
+   * Update user preferences
    */
-  async search(query: string, tenantId?: string): Promise<User[]> {
-    const where: any = {
-      OR: [
-        { email: { contains: query, mode: 'insensitive' } },
-        { firstName: { contains: query, mode: 'insensitive' } },
-        { lastName: { contains: query, mode: 'insensitive' } },
-      ],
-    }
-
-    if (tenantId) {
-      where.tenantId = tenantId
-    }
-
-    return this.findMany(where)
+  async updatePreferences(userId: string, preferences: Record<string, any>): Promise<User> {
+    const user = await this.findByIdOrThrow(userId)
+    const currentPreferences = (user.preferences as Record<string, any>) || {}
+    
+    return this.update(userId, {
+      preferences: {
+        ...currentPreferences,
+        ...preferences,
+      },
+    })
   }
 
   /**
-   * Get user statistics
-   */
-  async getStatistics(tenantId?: string): Promise<{
-    total: number
-    active: number
-    inactive: number
-    byRole: Record<UserRole, number>
-    byStatus: Record<UserStatus, number>
-  }> {
-    const where: any = {}
-    if (tenantId) {
-      where.tenantId = tenantId
-    }
-
-    const [
-      total,
-      active,
-      inactive,
-      roleStats,
-      statusStats,
-    ] = await Promise.all([
-      this.count(where),
-      this.count({ ...where, isActive: true }),
-      this.count({ ...where, isActive: false }),
-      this.prisma.user.groupBy({
-        by: ['role'],
-        where,
-        _count: true,
-      }),
-      this.prisma.user.groupBy({
-        by: ['status'],
-        where,
-        _count: true,
-      }),
-    ])
-
-    const byRole = Object.values(UserRole).reduce((acc, role) => {
-      acc[role] = roleStats.find(stat => stat.role === role)?._count || 0
-      return acc
-    }, {} as Record<UserRole, number>)
-
-    const byStatus = Object.values(UserStatus).reduce((acc, status) => {
-      acc[status] = statusStats.find(stat => stat.status === status)?._count || 0
-      return acc
-    }, {} as Record<UserStatus, number>)
-
-    return {
-      total,
-      active,
-      inactive,
-      byRole,
-      byStatus,
-    }
-  }
-
-  /**
-   * Find users with their relations
+   * Find users with relations
    */
   async findWithRelations(
     where?: Record<string, any>,
@@ -360,30 +355,137 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
   }
 
   /**
-   * Clean up expired tokens and sessions
+   * Get user statistics
    */
-  async cleanupExpiredTokens(): Promise<{ count: number }> {
-    return this.updateMany(
-      {
-        OR: [
-          {
-            passwordResetExpires: {
-              lt: new Date(),
-            },
+  async getStatistics(tenantId?: string): Promise<{
+    total: number
+    active: number
+    inactive: number
+    suspended: number
+    pending: number
+    byRole: Record<string, number>
+    recentLogins: number
+  }> {
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    try {
+      const [
+        total,
+        active,
+        inactive,
+        suspended,
+        pending,
+        roleStats,
+        recentLogins,
+      ] = await Promise.all([
+        this.count(where),
+        this.count({ ...where, status: UserStatus.ACTIVE }),
+        this.count({ ...where, status: UserStatus.INACTIVE }),
+        this.count({ ...where, status: UserStatus.SUSPENDED }),
+        this.count({ ...where, status: UserStatus.PENDING }),
+        this.prisma.user.groupBy({
+          by: ['role'],
+          where,
+          _count: { _all: true },
+        }),
+        this.count({
+          ...where,
+          lastLoginAt: {
+            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
           },
-          {
-            lockUntil: {
-              lt: new Date(),
-            },
-          },
-        ],
-      },
-      {
-        passwordResetToken: null,
-        passwordResetExpires: null,
-        lockUntil: null,
-        loginAttempts: 0,
+        }),
+      ])
+
+      // Group by role
+      const byRole: Record<string, number> = {}
+      roleStats.forEach(stat => {
+        byRole[stat.role] = stat._count._all
+      })
+
+      return {
+        total,
+        active,
+        inactive,
+        suspended,
+        pending,
+        byRole,
+        recentLogins,
       }
-    )
+    } catch (error) {
+      this.handleError(error, 'getStatistics')
+    }
+  }
+
+  /**
+   * Find users by creation date range
+   */
+  async findByCreationDate(
+    startDate: Date, 
+    endDate: Date, 
+    tenantId?: string
+  ): Promise<User[]> {
+    const where: any = {
+      createdAt: {
+        gte: startDate,
+        lte: endDate,
+      },
+    }
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    return this.findMany(where, undefined, { createdAt: 'desc' })
+  }
+
+  /**
+   * Find users by last login date range
+   */
+  async findByLastLoginDate(
+    startDate: Date, 
+    endDate: Date, 
+    tenantId?: string
+  ): Promise<User[]> {
+    const where: any = {
+      lastLoginAt: {
+        gte: startDate,
+        lte: endDate,
+      },
+    }
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    return this.findMany(where, undefined, { lastLoginAt: 'desc' })
+  }
+
+  /**
+   * Bulk update user status
+   */
+  async bulkUpdateStatus(userIds: string[], status: UserStatus): Promise<number> {
+    const result = await this.prisma.user.updateMany({
+      where: {
+        id: { in: userIds },
+      },
+      data: { status },
+    })
+
+    return result.count
+  }
+
+  /**
+   * Bulk update user role
+   */
+  async bulkUpdateRole(userIds: string[], role: UserRole): Promise<number> {
+    const result = await this.prisma.user.updateMany({
+      where: {
+        id: { in: userIds },
+      },
+      data: { role },
+    })
+
+    return result.count
   }
 }
