@@ -4,7 +4,7 @@
 
 import { Response } from 'express'
 import { ZodError } from 'zod'
-import { Prisma } from '@prisma/client'
+import { Prisma } from '@cms-platform/database'
 import { Logger } from './logger'
 
 // =============================================================================

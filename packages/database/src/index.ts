@@ -9,7 +9,7 @@ export * from './client'
 // Types
 export * from './types'
 
-// Re-export Prisma types
+// Re-export Prisma types and namespace
 export type {
   User,
   Role,
@@ -28,6 +28,8 @@ export type {
   PostStatus,
   PostType,
   CommentStatus,
-  SettingType,
-  Prisma
+  SettingType
 } from '@prisma/client'
+
+// Export Prisma namespace for error handling
+export { Prisma } from '@prisma/client'

@@ -177,13 +177,13 @@ export function deepClone<T>(obj: T): T {
   if (obj instanceof Date) return new Date(obj.getTime()) as unknown as T
   if (obj instanceof Array) return obj.map(item => deepClone(item)) as unknown as T
   if (typeof obj === 'object') {
-    const clonedObj = {} as T
+    const clonedObj = {} as Record<string, any>
     for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
         clonedObj[key] = deepClone((obj as any)[key])
       }
     }
-    return clonedObj
+    return clonedObj as T
   }
   return obj
 }
@@ -201,7 +201,7 @@ export function isEmpty(obj: any): boolean {
 /**
  * Pick specific keys from an object
  */
-export function pick<T, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
+export function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
   const result = {} as Pick<T, K>
   keys.forEach(key => {
     if (key in obj) {
