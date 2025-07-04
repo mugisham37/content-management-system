@@ -180,7 +180,7 @@ export function deepClone<T>(obj: T): T {
     const clonedObj = {} as T
     for (const key in obj) {
       if (obj.hasOwnProperty(key)) {
-        clonedObj[key] = deepClone(obj[key])
+        clonedObj[key] = deepClone((obj as any)[key])
       }
     }
     return clonedObj
