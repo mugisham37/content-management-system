@@ -1,101 +1,131 @@
 // =============================================================================
-// PRISMA SCHEMA - ENTERPRISE CMS DATABASE
+// ENTERPRISE CMS DATABASE SCHEMA - POSTGRESQL
 // =============================================================================
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// High-performance, multi-tenant content management system
+// Translated and enhanced from MongoDB models to PostgreSQL
 
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  extensions = [uuid_ossp(map: "uuid-ossp"), pg_trgm]
 }
 
 // =============================================================================
-// USER MANAGEMENT
+// TENANT MANAGEMENT (Multi-tenant Architecture)
+// =============================================================================
+
+model Tenant {
+  id          String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String
+  slug        String      @unique
+  description String?
+  plan        TenantPlan  @default(FREE)
+  status      TenantStatus @default(ACTIVE)
+  
+  // Usage limits and tracking
+  usageLimits Json        @default("{\"maxUsers\": 3, \"maxStorage\": 100, \"maxContentTypes\": 5, \"maxContents\": 100, \"maxApiRequests\": 1000, \"maxWebhooks\": 2, \"maxWorkflows\": 1}")
+  currentUsage Json       @default("{\"users\": 1, \"storage\": 0, \"contentTypes\": 0, \"contents\": 0, \"apiRequests\": 0, \"webhooks\": 0, \"workflows\": 0}")
+  
+  // Settings and customization
+  settings Json          @default("{\"defaultLocale\": \"en\", \"supportedLocales\": [\"en\"], \"timezone\": \"UTC\", \"dateFormat\": \"YYYY-MM-DD\", \"timeFormat\": \"HH:mm:ss\", \"currency\": \"USD\"}")
+  securitySettings Json  @default("{\"mfaRequired\": false, \"passwordPolicy\": {\"minLength\": 8}, \"sessionTimeout\": 60}")
+  customBranding Json?
+  
+  // Billing information
+  billingInfo Json?
+  customDomain String?
+  
+  // Relations
+  users         User[]
+  contentTypes  ContentType[]
+  contents      Content[]
+  media         Media[]
+  apiKeys       ApiKey[]
+  webhooks      Webhook[]
+  workflows     Workflow[]
+  routes        Route[]
+  translations  Translation[]
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("tenants")
+  @@index([slug])
+  @@index([status])
+  @@index([plan])
+}
+
+// =============================================================================
+// USER MANAGEMENT & AUTHENTICATION
 // =============================================================================
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  username  String?  @unique
-  firstName String?
-  lastName  String?
+  id        String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  email     String
+  firstName String
+  lastName  String
   avatar    String?
-  bio       String?
   
   // Authentication
-  password     String?
-  emailVerified DateTime?
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
+  password            String
+  emailVerified       Boolean   @default(false)
+  emailVerificationToken String?
+  passwordResetToken  String?
+  passwordResetExpires DateTime?
   
-  // Role-based access control
-  role   UserRole @default(USER)
-  roleId String?
-  roleModel Role? @relation(fields: [roleId], references: [id])
+  // Status and activity
+  status      UserStatus @default(PENDING)
+  isActive    Boolean    @default(true)
+  lastLoginAt DateTime?
+  loginAttempts Int      @default(0)
+  lockUntil   DateTime?
+  
+  // Role and permissions
+  role UserRole @default(VIEWER)
+  
+  // User preferences
+  preferences Json @default("{}")
+  
+  // Multi-tenant relationship
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   
   // OAuth providers
   accounts Account[]
   sessions Session[]
   
-  // CMS Relations
-  posts         Post[]
-  comments      Comment[]
-  media         Media[]
-  categories    Category[]
-  tags          Tag[]
+  // Content relations
+  createdContents     Content[] @relation("ContentCreator")
+  updatedContents     Content[] @relation("ContentUpdater")
+  publishedContents   Content[] @relation("ContentPublisher")
+  createdContentTypes ContentType[] @relation("ContentTypeCreator")
+  uploadedMedia       Media[]
+  createdApiKeys      ApiKey[]
+  workflowStepEntries WorkflowStepEntry[] @relation("StepAssignee")
+  completedSteps      WorkflowStepEntry[] @relation("StepCompleter")
   
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  createdBy String?
-  updatedBy String?
   
-  // Soft delete
-  deletedAt DateTime?
-  
+  @@unique([email, tenantId])
   @@map("users")
+  @@index([email])
+  @@index([tenantId])
+  @@index([status])
+  @@index([role])
+  @@index([isActive])
 }
-
-model Role {
-  id          String       @id @default(cuid())
-  name        String       @unique
-  description String?
-  permissions Permission[]
-  users       User[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  
-  @@map("roles")
-}
-
-model Permission {
-  id          String @id @default(cuid())
-  name        String @unique
-  description String?
-  resource    String // e.g., "posts", "users", "media"
-  action      String // e.g., "create", "read", "update", "delete"
-  
-  roles Role[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  
-  @@unique([resource, action])
-  @@map("permissions")
-}
-
-// =============================================================================
-// AUTHENTICATION
-// =============================================================================
 
 model Account {
-  id                String  @id @default(cuid())
-  userId            String
+  id                String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId            String  @db.Uuid
   type              String
   provider          String
   providerAccountId String
@@ -114,9 +144,9 @@ model Account {
 }
 
 model Session {
-  id           String   @id @default(cuid())
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   sessionToken String   @unique
-  userId       String
+  userId       String   @db.Uuid
   expires      DateTime
   
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -134,145 +164,147 @@ model VerificationToken {
 }
 
 // =============================================================================
-// CONTENT MANAGEMENT
+// API KEY MANAGEMENT
 // =============================================================================
 
-model Post {
-  id          String      @id @default(cuid())
-  title       String
-  slug        String      @unique
-  excerpt     String?
-  content     String      @db.Text
-  status      PostStatus  @default(DRAFT)
-  type        PostType    @default(POST)
+model ApiKey {
+  id         String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name       String
+  key        String        @unique
+  scopes     ApiKeyScope[]
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  isActive   Boolean       @default(true)
   
-  // SEO
-  metaTitle       String?
-  metaDescription String?
-  metaKeywords    String?
+  // Relations
+  createdById String  @db.Uuid
+  createdBy   User    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tenantId    String? @db.Uuid
+  tenant      Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([name, tenantId])
+  @@map("api_keys")
+  @@index([key])
+  @@index([tenantId])
+  @@index([isActive])
+}
+
+// =============================================================================
+// DYNAMIC CONTENT TYPE SYSTEM
+// =============================================================================
+
+model ContentType {
+  id          String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String
+  displayName String
+  description String?
+  isSystem    Boolean @default(false)
+  
+  // Dynamic field definitions stored as JSONB
+  fields Json @default("[]")
+  
+  // Relations
+  contents  Content[]
+  workflows Workflow[]
+  
+  // Multi-tenant
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("ContentTypeCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([name, tenantId])
+  @@map("content_types")
+  @@index([tenantId])
+  @@index([isSystem])
+}
+
+// =============================================================================
+// DYNAMIC CONTENT SYSTEM WITH VERSIONING
+// =============================================================================
+
+model Content {
+  id     String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  data   Json          // Dynamic content data stored as JSONB
+  status ContentStatus @default(DRAFT)
+  locale String        @default("en")
+  slug   String?
   
   // Publishing
   publishedAt DateTime?
-  scheduledAt DateTime?
+  publishedById String? @db.Uuid
+  publishedBy   User?   @relation("ContentPublisher", fields: [publishedById], references: [id])
   
   // Relations
-  authorId     String
-  author       User       @relation(fields: [authorId], references: [id])
-  categories   Category[]
-  tags         Tag[]
-  comments     Comment[]
-  media        Media[]
+  contentTypeId String      @db.Uuid
+  contentType   ContentType @relation(fields: [contentTypeId], references: [id], onDelete: Cascade)
   
-  // Featured content
-  featuredImage   String?
-  isFeatured      Boolean @default(false)
-  isSticky        Boolean @default(false)
+  // Versioning - stored as JSONB array for performance
+  versions Json @default("[]")
   
-  // Analytics
-  viewCount    Int @default(0)
-  likeCount    Int @default(0)
-  shareCount   Int @default(0)
-  commentCount Int @default(0)
+  // Multi-tenant
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Workflow
+  workflowEntries WorkflowEntry[]
   
   // Audit fields
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  createdBy String?
-  updatedBy String?
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("ContentCreator", fields: [createdById], references: [id])
+  updatedById String? @db.Uuid
+  updatedBy   User?   @relation("ContentUpdater", fields: [updatedById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
   
-  // Soft delete
-  deletedAt DateTime?
-  
-  @@map("posts")
+  @@unique([contentTypeId, slug, locale])
+  @@map("contents")
+  @@index([contentTypeId])
+  @@index([status])
+  @@index([locale])
+  @@index([tenantId])
+  @@index([publishedAt])
+  @@index([slug])
 }
 
-model Category {
-  id          String  @id @default(cuid())
-  name        String  @unique
-  slug        String  @unique
+// =============================================================================
+// FIELD TYPE DEFINITIONS
+// =============================================================================
+
+model FieldType {
+  id          String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String        @unique
+  displayName String
   description String?
-  color       String?
-  icon        String?
+  dataType    FieldDataType
+  uiType      FieldUIType
+  isSystem    Boolean       @default(false)
+  isBuiltIn   Boolean       @default(false)
   
-  // Hierarchy
-  parentId String?
-  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children Category[] @relation("CategoryHierarchy")
+  // Validation rules and settings
+  validations Json @default("[]")
+  settings    Json @default("{}")
   
-  // Relations
-  posts Post[]
-  
-  // SEO
-  metaTitle       String?
-  metaDescription String?
-  
-  // Display
-  isVisible Boolean @default(true)
-  sortOrder Int     @default(0)
-  
-  // Audit fields
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  createdBy String?
-  updatedBy String?
-  
-  // Relations
-  userId String?
-  user   User?   @relation(fields: [userId], references: [id])
-  
-  @@map("categories")
-}
-
-model Tag {
-  id          String  @id @default(cuid())
-  name        String  @unique
-  slug        String  @unique
-  description String?
-  color       String?
-  
-  // Relations
-  posts Post[]
-  
-  // Usage stats
-  usageCount Int @default(0)
-  
-  // Audit fields
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  createdBy String?
-  updatedBy String?
-  
-  // Relations
-  userId String?
-  user   User?   @relation(fields: [userId], references: [id])
-  
-  @@map("tags")
-}
-
-model Comment {
-  id      String        @id @default(cuid())
-  content String        @db.Text
-  status  CommentStatus @default(PENDING)
-  
-  // Relations
-  postId   String
-  post     Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
-  authorId String
-  author   User   @relation(fields: [authorId], references: [id])
-  
-  // Hierarchy (replies)
-  parentId String?
-  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
-  replies  Comment[] @relation("CommentReplies")
-  
-  // Moderation
-  isApproved Boolean @default(false)
+  // Plugin relation
+  pluginId String? @db.Uuid
+  plugin   Plugin? @relation(fields: [pluginId], references: [id])
   
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  @@map("comments")
+  @@map("field_types")
+  @@index([dataType])
+  @@index([isSystem])
+  @@index([isBuiltIn])
 }
 
 // =============================================================================
@@ -280,169 +312,422 @@ model Comment {
 // =============================================================================
 
 model Media {
-  id          String    @id @default(cuid())
-  filename    String
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  filename     String    @unique
   originalName String
-  mimeType    String
-  size        Int
-  url         String
-  thumbnailUrl String?
+  path         String
+  url          String
+  type         MediaType
   
-  // Metadata
-  width       Int?
-  height      Int?
-  duration    Int? // for videos
-  alt         String?
-  caption     String?
-  description String?
+  // Metadata stored as JSONB for flexibility
+  metadata Json
   
   // Organization
-  folder   String?
-  tags     String[] // Array of tags for organization
+  alt     String?
+  caption String?
+  tags    String[] @default([])
   
   // Relations
-  uploadedById String
-  uploadedBy   User   @relation(fields: [uploadedById], references: [id])
-  posts        Post[]
-  
-  // Storage
-  storageProvider String @default("local") // local, s3, cloudinary, etc.
-  storageKey      String?
+  uploadedById String  @db.Uuid
+  uploadedBy   User    @relation(fields: [uploadedById], references: [id])
+  tenantId     String? @db.Uuid
+  tenant       Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  // Soft delete
-  deletedAt DateTime?
-  
   @@map("media")
+  @@index([type])
+  @@index([tenantId])
+  @@index([uploadedById])
+  @@index([tags])
+  @@index([createdAt])
 }
 
 // =============================================================================
-// SYSTEM SETTINGS
+// WORKFLOW MANAGEMENT
 // =============================================================================
 
-model Setting {
-  id          String      @id @default(cuid())
-  key         String      @unique
-  value       String      @db.Text
-  type        SettingType @default(STRING)
-  group       String      @default("general")
+model Workflow {
+  id          String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String
   description String?
-  isPublic    Boolean     @default(false)
+  isDefault   Boolean @default(false)
   
+  // Workflow steps stored as JSONB
+  steps Json @default("[]")
+  
+  // Relations
+  contentTypes String[] @db.Uuid
+  contentTypeRefs ContentType[]
+  entries      WorkflowEntry[]
+  
+  // Multi-tenant
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  @@map("settings")
+  @@map("workflows")
+  @@index([isDefault])
+  @@index([tenantId])
+}
+
+model WorkflowEntry {
+  id          String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  status      WorkflowEntryStatus @default(IN_PROGRESS)
+  currentStep String?             @db.Uuid
+  
+  // Relations
+  workflowId String   @db.Uuid
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  contentId  String   @db.Uuid
+  content    Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  // Step entries
+  steps WorkflowStepEntry[]
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("workflow_entries")
+  @@index([workflowId])
+  @@index([contentId])
+  @@index([status])
+}
+
+model WorkflowStepEntry {
+  id          String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  stepId      String              @db.Uuid
+  status      WorkflowEntryStatus @default(IN_PROGRESS)
+  comments    String?
+  completedAt DateTime?
+  
+  // Relations
+  entryId String        @db.Uuid
+  entry   WorkflowEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  
+  assignedTo   String[] @db.Uuid
+  assignedUsers User[]  @relation("StepAssignee")
+  
+  completedById String? @db.Uuid
+  completedBy   User?   @relation("StepCompleter", fields: [completedById], references: [id])
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  
+  @@map("workflow_step_entries")
+  @@index([entryId])
+  @@index([stepId])
+  @@index([status])
 }
 
 // =============================================================================
-// AUDIT LOG
+// WEBHOOK SYSTEM
 // =============================================================================
 
-model AuditLog {
-  id         String   @id @default(cuid())
-  action     String   // CREATE, UPDATE, DELETE, LOGIN, etc.
-  resource   String   // users, posts, media, etc.
-  resourceId String?
-  userId     String?
-  userEmail  String?
-  ipAddress  String?
-  userAgent  String?
-  metadata   Json?    // Additional context data
+model Webhook {
+  id     String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name   String
+  url    String
+  secret String?
+  events WebhookEvent[]
+  status WebhookStatus   @default(ACTIVE)
   
+  // Content type filtering
+  contentTypeIds String[] @db.Uuid
+  
+  // Relations
+  tenantId   String? @db.Uuid
+  tenant     Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+  
+  // Audit fields
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
   
-  @@map("audit_logs")
+  @@map("webhooks")
+  @@index([tenantId])
+  @@index([status])
+}
+
+model WebhookDelivery {
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  timestamp  DateTime @default(now())
+  success    Boolean
+  statusCode Int?
+  request    String   @db.Text
+  response   String?  @db.Text
+  error      String?  @db.Text
+  
+  // Relations
+  webhookId String  @db.Uuid
+  webhook   Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  
+  @@map("webhook_deliveries")
+  @@index([webhookId])
+  @@index([timestamp])
+  @@index([success])
+}
+
+// =============================================================================
+// PLUGIN SYSTEM
+// =============================================================================
+
+model Plugin {
+  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String
+  slug        String       @unique
+  description String?
+  version     String
+  author      String?
+  repository  String?
+  homepage    String?
+  license     String?
+  main        String
+  status      PluginStatus @default(INACTIVE)
+  isSystem    Boolean      @default(false)
+  
+  // Configuration and metadata
+  config       Json     @default("{}")
+  hooks        String[] @default([])
+  dependencies Json     @default("{}")
+  
+  // Error tracking
+  lastErrorAt    DateTime?
+  errorMessage   String?
+  lastEnabledAt  DateTime?
+  lastDisabledAt DateTime?
+  
+  // Relations
+  fieldTypes FieldType[]
+  
+  // Audit fields
+  installedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("plugins")
+  @@index([slug])
+  @@index([status])
+  @@index([isSystem])
+}
+
+// =============================================================================
+// ROUTE MANAGEMENT
+// =============================================================================
+
+model Route {
+  id          String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  path        String
+  method      RouteMethod
+  target      String
+  status      RouteStatus @default(ACTIVE)
+  description String?
+  isPublic    Boolean     @default(false)
+  
+  // Advanced configuration stored as JSONB
+  rateLimit      Json?
+  caching        Json?
+  transformation Json?
+  
+  // Multi-tenant
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([path, method, tenantId])
+  @@map("routes")
+  @@index([tenantId])
+  @@index([status])
+  @@index([method])
+}
+
+// =============================================================================
+// TRANSLATION SYSTEM
+// =============================================================================
+
+model Translation {
+  id        String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  locale    String
+  namespace String @default("common")
+  key       String
+  value     String @db.Text
+  
+  // Multi-tenant
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([locale, namespace, key, tenantId])
+  @@map("translations")
+  @@index([locale])
+  @@index([namespace])
+  @@index([tenantId])
 }
 
 // =============================================================================
 // ENUMS
 // =============================================================================
 
+enum TenantPlan {
+  FREE
+  BASIC
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+  ARCHIVED
+}
+
 enum UserRole {
   SUPER_ADMIN
   ADMIN
   EDITOR
   AUTHOR
-  CONTRIBUTOR
-  USER
+  VIEWER
 }
 
-enum PostStatus {
-  DRAFT
-  PUBLISHED
-  SCHEDULED
-  ARCHIVED
-  TRASH
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
 }
 
-enum PostType {
-  POST
-  PAGE
-  PRODUCT
-  EVENT
+enum ApiKeyScope {
+  READ
+  WRITE
+  ADMIN
+}
+
+enum FieldDataType {
+  STRING
+  TEXT
+  RICH_TEXT
+  NUMBER
+  INTEGER
+  FLOAT
+  BOOLEAN
+  DATE
+  DATETIME
+  EMAIL
+  URL
+  IMAGE
+  FILE
+  REFERENCE
+  JSON
+  ARRAY
+  COMPONENT
+  ENUM
+  COLOR
+  GEO_POINT
+  RELATION
   CUSTOM
 }
 
-enum CommentStatus {
-  PENDING
+enum FieldUIType {
+  TEXT_INPUT
+  TEXT_AREA
+  RICH_TEXT_EDITOR
+  NUMBER_INPUT
+  CHECKBOX
+  TOGGLE
+  DATE_PICKER
+  DATE_TIME_PICKER
+  EMAIL_INPUT
+  URL_INPUT
+  IMAGE_UPLOADER
+  FILE_UPLOADER
+  REFERENCE_SELECTOR
+  JSON_EDITOR
+  ARRAY_EDITOR
+  COMPONENT_EDITOR
+  SELECT
+  MULTI_SELECT
+  RADIO_GROUP
+  COLOR_PICKER
+  MAP
+  RELATION_EDITOR
+  CUSTOM_UI
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  OTHER
+}
+
+enum WorkflowEntryStatus {
+  IN_PROGRESS
   APPROVED
   REJECTED
-  SPAM
+  CANCELED
 }
 
-enum SettingType {
-  STRING
-  NUMBER
-  BOOLEAN
-  JSON
-  TEXT
+enum WebhookEvent {
+  CONTENT_CREATED
+  CONTENT_UPDATED
+  CONTENT_DELETED
+  CONTENT_PUBLISHED
+  CONTENT_UNPUBLISHED
+  CONTENT_ARCHIVED
+  MEDIA_UPLOADED
+  MEDIA_UPDATED
+  MEDIA_DELETED
+  USER_CREATED
+  USER_UPDATED
+  USER_DELETED
+  WORKFLOW_STARTED
+  WORKFLOW_COMPLETED
+  WORKFLOW_STEP_COMPLETED
 }
 
-// =============================================================================
-// INDEXES FOR PERFORMANCE
-// =============================================================================
+enum WebhookStatus {
+  ACTIVE
+  INACTIVE
+}
 
-// User indexes
-// @@index([email])
-// @@index([username])
-// @@index([isActive])
-// @@index([createdAt])
+enum PluginStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+}
 
-// Post indexes
-// @@index([slug])
-// @@index([status])
-// @@index([type])
-// @@index([publishedAt])
-// @@index([authorId])
-// @@index([createdAt])
-// @@index([isFeatured])
+enum RouteMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+  OPTIONS
+  HEAD
+  ALL
+}
 
-// Category indexes
-// @@index([slug])
-// @@index([parentId])
-// @@index([isVisible])
-
-// Tag indexes
-// @@index([slug])
-// @@index([usageCount])
-
-// Comment indexes
-// @@index([postId])
-// @@index([authorId])
-// @@index([status])
-// @@index([createdAt])
-
-// Media indexes
-// @@index([uploadedById])
-// @@index([mimeType])
-// @@index([createdAt])
-
-// Audit log indexes
-// @@index([action])
-// @@index([resource])
-// @@index([userId])
-// @@index([createdAt])
+enum RouteStatus {
+  ACTIVE
+  INACTIVE
+  DEPRECATED
+}
