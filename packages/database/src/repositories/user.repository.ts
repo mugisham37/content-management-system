@@ -175,7 +175,7 @@ export class UserRepository extends BaseRepository<User, UserCreateInput, UserUp
     }
 
     return this.update(user.id, {
-      emailVerified: new Date(),
+      emailVerified: true,
       emailVerificationToken: null,
     })
   }
