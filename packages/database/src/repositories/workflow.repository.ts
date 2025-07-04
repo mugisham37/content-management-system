@@ -78,11 +78,11 @@ export class WorkflowRepository extends BaseRepository<Workflow, WorkflowCreateI
     const workflow = await this.findByIdOrThrow(workflowId)
 
     // First, unset default flag for other workflows with same content types
-    if (workflow.contentTypeIds && workflow.contentTypeIds.length > 0) {
+    if (workflow.contentTypes && workflow.contentTypes.length > 0) {
       await this.prisma.workflow.updateMany({
         where: {
           id: { not: workflowId },
-          contentTypeIds: { hasSome: workflow.contentTypeIds },
+          contentTypes: { hasSome: workflow.contentTypes },
           isDefault: true,
           tenantId: workflow.tenantId,
         },
@@ -98,10 +98,10 @@ export class WorkflowRepository extends BaseRepository<Workflow, WorkflowCreateI
    */
   async addContentTypes(workflowId: string, contentTypeIds: string[]): Promise<Workflow> {
     const workflow = await this.findByIdOrThrow(workflowId)
-    const currentContentTypes = workflow.contentTypeIds || []
+    const currentContentTypes = workflow.contentTypes || []
     const uniqueContentTypes = [...new Set([...currentContentTypes, ...contentTypeIds])]
 
-    return this.update(workflowId, { contentTypeIds: uniqueContentTypes })
+    return this.update(workflowId, { contentTypes: uniqueContentTypes })
   }
 
   /**
@@ -109,10 +109,10 @@ export class WorkflowRepository extends BaseRepository<Workflow, WorkflowCreateI
    */
   async removeContentTypes(workflowId: string, contentTypeIds: string[]): Promise<Workflow> {
     const workflow = await this.findByIdOrThrow(workflowId)
-    const currentContentTypes = workflow.contentTypeIds || []
-    const updatedContentTypes = currentContentTypes.filter(ct => !contentTypeIds.includes(ct))
+    const currentContentTypes = workflow.contentTypes || []
+    const updatedContentTypes = currentContentTypes.filter((ct: string) => !contentTypeIds.includes(ct))
 
-    return this.update(workflowId, { contentTypeIds: updatedContentTypes })
+    return this.update(workflowId, { contentTypes: updatedContentTypes })
   }
 
   /**
@@ -342,7 +342,7 @@ export class WorkflowEntryRepository extends BaseRepository<WorkflowEntry, Workf
 
     return this.update(entryId, {
       status: WorkflowEntryStatus.CANCELED,
-      currentStepId: null,
+      currentStep: null,
       updatedAt: new Date(),
     })
   }
