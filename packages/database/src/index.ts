@@ -38,8 +38,8 @@ export {
   healthCheck,
   getIndexStats,
   updateIndexMapping
-} from './services/elasticsearch.service'
-export type { ElasticsearchConfig } from './services/elasticsearch.service'
+} from '../../../apps/server/src/services/elasticsearch.service'
+export type { ElasticsearchConfig } from '../../../apps/server/src/services/elasticsearch.service'
 
 // Export Prisma types for external use
 export type {
