@@ -7,6 +7,7 @@ import swaggerUi from "swagger-ui-express"
 import type { Express } from "express"
 import { config } from "../config"
 import { Logger } from "./logger"
+import { isError, isSwaggerDocument, type SwaggerDocument } from "./typeGuards"
 
 // =============================================================================
 // SWAGGER CONFIGURATION
@@ -776,11 +777,16 @@ const swaggerOptions = {
 /**
  * Initialize swagger specification
  */
-const initializeSwaggerSpec = () => {
+const initializeSwaggerSpec = (): SwaggerDocument => {
   try {
-    return swaggerJsdoc(swaggerOptions)
+    const spec = swaggerJsdoc(swaggerOptions)
+    if (!isSwaggerDocument(spec)) {
+      throw new Error("Generated specification is not a valid Swagger document")
+    }
+    return spec
   } catch (error) {
-    Logger.error("Failed to initialize Swagger specification", { error: error.message })
+    const errorMessage = isError(error) ? error.message : 'Unknown error occurred'
+    Logger.error("Failed to initialize Swagger specification", { error: errorMessage })
     throw error
   }
 }
@@ -850,7 +856,8 @@ export const setupSwagger = (app: Express): void => {
       version: swaggerSpec.info.version,
     })
   } catch (error) {
-    Logger.error("Failed to setup Swagger documentation", { error: error.message })
+    const errorMessage = isError(error) ? error.message : 'Unknown error occurred'
+    Logger.error("Failed to setup Swagger documentation", { error: errorMessage })
     throw error
   }
 }
@@ -920,7 +927,8 @@ export const validateSwaggerSpec = (): boolean => {
     Logger.info("Swagger specification validation passed")
     return true
   } catch (error) {
-    Logger.error("Swagger specification validation failed", { error: error.message })
+    const errorMessage = isError(error) ? error.message : 'Unknown error occurred'
+    Logger.error("Swagger specification validation failed", { error: errorMessage })
     return false
   }
 }

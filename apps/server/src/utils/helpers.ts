@@ -5,6 +5,7 @@
 import type { Request } from "express"
 import { ApiError } from "./errors"
 import { config } from "../config"
+import { isObject as isObjectTypeGuard, isMergeable, isCloneable, type ObjectLike } from "./typeGuards"
 
 // =============================================================================
 // PAGINATION UTILITIES
@@ -448,16 +449,16 @@ export const generateSecureToken = (length = 32): string => {
 /**
  * Deep merge objects with array handling
  */
-export const deepMerge = (target: any, source: any): any => {
-  const output = { ...target }
+export const deepMerge = <T extends ObjectLike, U extends ObjectLike>(target: T, source: U): T & U => {
+  const output = { ...target } as T & U
 
-  if (isObject(target) && isObject(source)) {
+  if (isMergeable(target) && isMergeable(source)) {
     Object.keys(source).forEach((key) => {
-      if (isObject(source[key])) {
+      if (isMergeable(source[key])) {
         if (!(key in target)) {
           Object.assign(output, { [key]: source[key] })
         } else {
-          output[key] = deepMerge(target[key], source[key])
+          (output as any)[key] = deepMerge(target[key] as ObjectLike, source[key] as ObjectLike)
         }
       } else {
         Object.assign(output, { [key]: source[key] })
@@ -476,21 +477,32 @@ export const isObject = (item: any): boolean => {
 }
 
 /**
- * Deep clone an object
+ * Deep clone an object with proper type constraints
+ * Supports primitives, objects, arrays, dates, and null/undefined values
  */
-export const deepClone = <T>(obj: T): T => {
+export function deepClone<T extends object>(obj: T): T;
+export function deepClone<T>(obj: T): T;
+export function deepClone<T>(obj: T): T {
+  // Handle primitive types and null
   if (obj === null || typeof obj !== "object") return obj
-  if (obj instanceof Date) return new Date(obj.getTime()) as unknown as T
-  if (obj instanceof Array) return obj.map(item => deepClone(item)) as unknown as T
+  
+  // Handle Date objects
+  if (obj instanceof Date) return new Date(obj.getTime()) as T
+  
+  // Handle Arrays
+  if (Array.isArray(obj)) return obj.map(item => deepClone(item)) as T
+  
+  // Handle Objects
   if (typeof obj === "object" && obj !== null) {
-    const clonedObj: any = {}
+    const clonedObj = {} as T
     for (const key in obj) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        clonedObj[key] = deepClone((obj as any)[key])
+        (clonedObj as any)[key] = deepClone((obj as any)[key])
       }
     }
-    return clonedObj as T
+    return clonedObj
   }
+  
   return obj
 }
 
@@ -500,7 +512,7 @@ export const deepClone = <T>(obj: T): T => {
 export const pick = <T, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> => {
   const result = {} as Pick<T, K>
   keys.forEach(key => {
-    if (key in obj) {
+    if (key) {
       result[key] = obj[key]
     }
   })
