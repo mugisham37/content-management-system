@@ -482,9 +482,9 @@ export const deepClone = <T>(obj: T): T => {
   if (obj === null || typeof obj !== "object") return obj
   if (obj instanceof Date) return new Date(obj.getTime()) as unknown as T
   if (obj instanceof Array) return obj.map(item => deepClone(item)) as unknown as T
-  if (typeof obj === "object") {
-    const clonedObj = {} as { [key: string]: any }
-    for (const key in obj as Record<string, any>) {
+  if (typeof obj === "object" && obj !== null) {
+    const clonedObj: any = {}
+    for (const key in obj) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
         clonedObj[key] = deepClone((obj as any)[key])
       }

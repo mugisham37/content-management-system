@@ -453,6 +453,252 @@ export type PasswordStrength = {
 }
 
 // =============================================================================
+// ADVANCED UTILITY CLASSES
+// =============================================================================
+
+/**
+ * Rate limiter utility for API endpoints
+ */
+export class RateLimiter {
+  private requests = new Map<string, { count: number; resetTime: number }>()
+  
+  constructor(
+    private maxRequests: number = 100,
+    private windowMs: number = 15 * 60 * 1000 // 15 minutes
+  ) {}
+
+  isAllowed(identifier: string): boolean {
+    const now = Date.now()
+    const record = this.requests.get(identifier)
+
+    if (!record || now > record.resetTime) {
+      this.requests.set(identifier, {
+        count: 1,
+        resetTime: now + this.windowMs
+      })
+      return true
+    }
+
+    if (record.count >= this.maxRequests) {
+      return false
+    }
+
+    record.count++
+    return true
+  }
+
+  getRemainingRequests(identifier: string): number {
+    const record = this.requests.get(identifier)
+    if (!record || Date.now() > record.resetTime) {
+      return this.maxRequests
+    }
+    return Math.max(0, this.maxRequests - record.count)
+  }
+
+  getResetTime(identifier: string): number {
+    const record = this.requests.get(identifier)
+    return record?.resetTime || Date.now()
+  }
+
+  cleanup(): void {
+    const now = Date.now()
+    for (const [key, record] of this.requests.entries()) {
+      if (now > record.resetTime) {
+        this.requests.delete(key)
+      }
+    }
+  }
+}
+
+/**
+ * Circuit breaker utility for external service calls
+ */
+export class CircuitBreaker {
+  private failures = 0
+  private lastFailureTime = 0
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED'
+
+  constructor(
+    private threshold: number = 5,
+    private timeout: number = 60000, // 1 minute
+    private resetTimeout: number = 30000 // 30 seconds
+  ) {}
+
+  async execute<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime > this.resetTimeout) {
+        this.state = 'HALF_OPEN'
+      } else {
+        throw new Error('Circuit breaker is OPEN')
+      }
+    }
+
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Operation timeout')), this.timeout)
+        )
+      ])
+
+      this.onSuccess()
+      return result
+    } catch (error) {
+      this.onFailure()
+      throw error
+    }
+  }
+
+  private onSuccess(): void {
+    this.failures = 0
+    this.state = 'CLOSED'
+  }
+
+  private onFailure(): void {
+    this.failures++
+    this.lastFailureTime = Date.now()
+
+    if (this.failures >= this.threshold) {
+      this.state = 'OPEN'
+    }
+  }
+
+  getState(): string {
+    return this.state
+  }
+
+  getFailureCount(): number {
+    return this.failures
+  }
+}
+
+/**
+ * Event emitter utility for internal events
+ */
+export class EventEmitter {
+  private events = new Map<string, Function[]>()
+
+  on(event: string, listener: Function): void {
+    if (!this.events.has(event)) {
+      this.events.set(event, [])
+    }
+    this.events.get(event)!.push(listener)
+  }
+
+  off(event: string, listener: Function): void {
+    const listeners = this.events.get(event)
+    if (listeners) {
+      const index = listeners.indexOf(listener)
+      if (index > -1) {
+        listeners.splice(index, 1)
+      }
+    }
+  }
+
+  emit(event: string, ...args: any[]): void {
+    const listeners = this.events.get(event)
+    if (listeners) {
+      listeners.forEach(listener => {
+        try {
+          listener(...args)
+        } catch (error) {
+          Logger.error(`Error in event listener for ${event}`, { error })
+        }
+      })
+    }
+  }
+
+  once(event: string, listener: Function): void {
+    const onceWrapper = (...args: any[]) => {
+      this.off(event, onceWrapper)
+      listener(...args)
+    }
+    this.on(event, onceWrapper)
+  }
+
+  removeAllListeners(event?: string): void {
+    if (event) {
+      this.events.delete(event)
+    } else {
+      this.events.clear()
+    }
+  }
+
+  listenerCount(event: string): number {
+    return this.events.get(event)?.length || 0
+  }
+}
+
+/**
+ * Performance monitor utility
+ */
+export class PerformanceMonitor {
+  private metrics = new Map<string, { 
+    count: number
+    totalTime: number
+    minTime: number
+    maxTime: number
+    avgTime: number
+  }>()
+
+  startTimer(operation: string): () => void {
+    const startTime = Date.now()
+    
+    return () => {
+      const duration = Date.now() - startTime
+      this.recordMetric(operation, duration)
+    }
+  }
+
+  async measure<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    const endTimer = this.startTimer(operation)
+    try {
+      const result = await fn()
+      endTimer()
+      return result
+    } catch (error) {
+      endTimer()
+      throw error
+    }
+  }
+
+  private recordMetric(operation: string, duration: number): void {
+    const existing = this.metrics.get(operation)
+    
+    if (!existing) {
+      this.metrics.set(operation, {
+        count: 1,
+        totalTime: duration,
+        minTime: duration,
+        maxTime: duration,
+        avgTime: duration
+      })
+    } else {
+      existing.count++
+      existing.totalTime += duration
+      existing.minTime = Math.min(existing.minTime, duration)
+      existing.maxTime = Math.max(existing.maxTime, duration)
+      existing.avgTime = existing.totalTime / existing.count
+    }
+  }
+
+  getMetrics(operation?: string): any {
+    if (operation) {
+      return this.metrics.get(operation)
+    }
+    return Object.fromEntries(this.metrics)
+  }
+
+  reset(operation?: string): void {
+    if (operation) {
+      this.metrics.delete(operation)
+    } else {
+      this.metrics.clear()
+    }
+  }
+}
+
+// =============================================================================
 // DEFAULT EXPORT
 // =============================================================================
 
@@ -499,6 +745,12 @@ export default {
   
   // Type utilities
   TypeUtils,
+  
+  // Advanced utilities
+  RateLimiter,
+  CircuitBreaker,
+  EventEmitter,
+  PerformanceMonitor,
   
   // Constants
   HTTP_STATUS,
