@@ -13,9 +13,33 @@ export { UserRepository } from './repositories/user.repository'
 export { TenantRepository } from './repositories/tenant.repository'
 export { ContentTypeRepository } from './repositories/content-type.repository'
 export { ContentRepository } from './repositories/content.repository'
+export { ContentVersionRepository } from './repositories/content-version.repository'
 export { MediaRepository } from './repositories/media.repository'
 export { WebhookRepository, WebhookDeliveryRepository } from './repositories/webhook.repository'
 export { WorkflowRepository, WorkflowEntryRepository } from './repositories/workflow.repository'
+export { ApiKeyRepository } from './repositories/api-key.repository'
+export { FieldTypeRepository } from './repositories/field-type.repository'
+export { TranslationRepository } from './repositories/translation.repository'
+export { PluginRepository } from './repositories/plugin.repository'
+export { RouteRepository } from './repositories/route.repository'
+
+// Export services
+export { 
+  ElasticsearchService,
+  initializeElasticsearch,
+  getElasticsearchClient,
+  closeElasticsearchConnection,
+  indexDocument,
+  updateDocument,
+  deleteDocument,
+  searchDocuments,
+  bulkIndexDocuments,
+  reindexCollection,
+  healthCheck,
+  getIndexStats,
+  updateIndexMapping
+} from './services/elasticsearch.service'
+export type { ElasticsearchConfig } from './services/elasticsearch.service'
 
 // Export Prisma types for external use
 export type {
@@ -45,20 +69,32 @@ import { UserRepository } from './repositories/user.repository'
 import { TenantRepository } from './repositories/tenant.repository'
 import { ContentTypeRepository } from './repositories/content-type.repository'
 import { ContentRepository } from './repositories/content.repository'
+import { ContentVersionRepository } from './repositories/content-version.repository'
 import { MediaRepository } from './repositories/media.repository'
 import { WebhookRepository, WebhookDeliveryRepository } from './repositories/webhook.repository'
 import { WorkflowRepository, WorkflowEntryRepository } from './repositories/workflow.repository'
+import { ApiKeyRepository } from './repositories/api-key.repository'
+import { FieldTypeRepository } from './repositories/field-type.repository'
+import { TranslationRepository } from './repositories/translation.repository'
+import { PluginRepository } from './repositories/plugin.repository'
+import { RouteRepository } from './repositories/route.repository'
 
 export interface DatabaseRepositories {
   user: UserRepository
   tenant: TenantRepository
   contentType: ContentTypeRepository
   content: ContentRepository
+  contentVersion: ContentVersionRepository
   media: MediaRepository
   webhook: WebhookRepository
   webhookDelivery: WebhookDeliveryRepository
   workflow: WorkflowRepository
   workflowEntry: WorkflowEntryRepository
+  apiKey: ApiKeyRepository
+  fieldType: FieldTypeRepository
+  translation: TranslationRepository
+  plugin: PluginRepository
+  route: RouteRepository
 }
 
 /**
@@ -70,11 +106,17 @@ export function createRepositories(prisma: PrismaClient): DatabaseRepositories {
     tenant: new TenantRepository(prisma),
     contentType: new ContentTypeRepository(prisma),
     content: new ContentRepository(prisma),
+    contentVersion: new ContentVersionRepository(prisma),
     media: new MediaRepository(prisma),
     webhook: new WebhookRepository(prisma),
     webhookDelivery: new WebhookDeliveryRepository(prisma),
     workflow: new WorkflowRepository(prisma),
     workflowEntry: new WorkflowEntryRepository(prisma),
+    apiKey: new ApiKeyRepository(prisma),
+    fieldType: new FieldTypeRepository(prisma),
+    translation: new TranslationRepository(prisma),
+    plugin: new PluginRepository(prisma),
+    route: new RouteRepository(prisma),
   }
 }
 

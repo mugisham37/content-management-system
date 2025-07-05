@@ -110,6 +110,10 @@ model User {
   workflowStepEntries WorkflowStepEntry[] @relation("StepAssignee")
   completedSteps      WorkflowStepEntry[] @relation("StepCompleter")
   
+  // Content version relations
+  createdVersions     ContentVersion[] @relation("VersionCreator")
+  publishedVersions   ContentVersion[] @relation("VersionPublisher")
+  
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -247,8 +251,9 @@ model Content {
   contentTypeId String      @db.Uuid
   contentType   ContentType @relation(fields: [contentTypeId], references: [id], onDelete: Cascade)
   
-  // Versioning - stored as JSONB array for performance
+  // Versioning - both JSONB array for performance and separate model for advanced operations
   versions Json @default("[]")
+  contentVersions ContentVersion[]
   
   // Multi-tenant
   tenantId String? @db.Uuid
@@ -273,6 +278,39 @@ model Content {
   @@index([tenantId])
   @@index([publishedAt])
   @@index([slug])
+}
+
+// =============================================================================
+// CONTENT VERSIONING SYSTEM
+// =============================================================================
+
+model ContentVersion {
+  id      String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  version Int
+  data    Json   // Snapshot of content data at this version
+  status  ContentVersionStatus @default(DRAFT)
+  notes   String?
+  
+  // Publishing information
+  publishedAt DateTime?
+  publishedById String? @db.Uuid
+  publishedBy   User?   @relation("VersionPublisher", fields: [publishedById], references: [id])
+  
+  // Relations
+  contentId String  @db.Uuid
+  content   Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("VersionCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  
+  @@unique([contentId, version])
+  @@map("content_versions")
+  @@index([contentId])
+  @@index([status])
+  @@index([version])
+  @@index([createdAt])
 }
 
 // =============================================================================
@@ -666,6 +704,12 @@ enum FieldUIType {
 }
 
 enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ContentVersionStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
