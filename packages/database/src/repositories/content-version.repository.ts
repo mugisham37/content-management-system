@@ -1,6 +1,26 @@
 import { BaseRepository } from "./base.repository"
 import { ContentVersion, ContentVersionStatus, Prisma, PrismaClient } from "@prisma/client"
 import { DatabaseError } from "../utils/errors"
+import {
+  ContentVersionWithRelations,
+  DifferenceItem,
+  ModifiedDifferenceItem,
+  VersionDifferences,
+  CreateVersionInput,
+  VersionStats,
+  VersionComparisonResult,
+  ContentVersionData
+} from "../types/content-version.types"
+import {
+  ensureString,
+  ensureStringOrUndefined,
+  ensureId,
+  ensureNumber,
+  ensureInteger,
+  ensureJsonObject,
+  safeGetProperty,
+  safeGetStringProperty
+} from "../utils/type-guards"
 
 type ContentVersionCreateInput = Prisma.ContentVersionCreateInput
 type ContentVersionUpdateInput = Prisma.ContentVersionUpdateInput
@@ -41,8 +61,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to find versions for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to find versions for content ${contentId}`, undefined, error)
     }
   }
 
@@ -77,8 +97,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to find version ${version} for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to find version ${version} for content ${contentId}`, undefined, error)
     }
   }
 
@@ -120,8 +140,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to find latest version for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to find latest version for content ${contentId}`, undefined, error)
     }
   }
 
@@ -136,8 +156,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
         select: { version: true },
       })
       return (latestVersion?.version || 0) + 1
-    } catch (error) {
-      throw new DatabaseError(`Failed to get next version number for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to get next version number for content ${contentId}`, undefined, error)
     }
   }
 
@@ -174,8 +194,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError("Failed to create content version", error)
+    } catch (error: unknown) {
+      throw new DatabaseError("Failed to create content version", undefined, error)
     }
   }
 
@@ -198,7 +218,7 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
         data: {
           status: ContentVersionStatus.PUBLISHED,
           publishedAt: new Date(),
-          publishedById,
+          publishedById: ensureStringOrUndefined(publishedById),
         },
         include: {
           createdBy: {
@@ -219,8 +239,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to publish version ${version} for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to publish version ${version} for content ${contentId}`, undefined, error)
     }
   }
 
@@ -258,8 +278,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to archive version ${version} for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to archive version ${version} for content ${contentId}`, undefined, error)
     }
   }
 
@@ -311,8 +331,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError("Failed to find published versions", error)
+    } catch (error: unknown) {
+      throw new DatabaseError("Failed to find published versions", undefined, error)
     }
   }
 
@@ -356,8 +376,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError("Failed to find draft versions", error)
+    } catch (error: unknown) {
+      throw new DatabaseError("Failed to find draft versions", undefined, error)
     }
   }
 
@@ -401,8 +421,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError("Failed to find archived versions", error)
+    } catch (error: unknown) {
+      throw new DatabaseError("Failed to find archived versions", undefined, error)
     }
   }
 
@@ -432,8 +452,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
       })
 
       return result.count
-    } catch (error) {
-      throw new DatabaseError(`Failed to cleanup old versions for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to cleanup old versions for content ${contentId}`, undefined, error)
     }
   }
 
@@ -444,49 +464,53 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
     contentId: string,
     version1: number,
     version2: number
-  ): Promise<{
-    version1: ContentVersion
-    version2: ContentVersion
-    differences: any
-  }> {
+  ): Promise<VersionComparisonResult> {
     try {
       const [v1, v2] = await Promise.all([
         this.findByContentIdAndVersionOrThrow(contentId, version1),
         this.findByContentIdAndVersionOrThrow(contentId, version2),
       ])
 
-      // Simple difference calculation (you might want to use a more sophisticated diff library)
-      const differences = {
-        added: [],
-        removed: [],
-        modified: [],
+      // Initialize properly typed differences object
+      const differences: VersionDifferences = {
+        added: [] as DifferenceItem[],
+        removed: [] as DifferenceItem[],
+        modified: [] as ModifiedDifferenceItem[],
       }
 
-      // This is a basic implementation - you might want to use libraries like 'deep-diff' for more sophisticated comparison
-      const keys1 = Object.keys(v1.data as any)
-      const keys2 = Object.keys(v2.data as any)
+      // Convert data to safe objects for comparison
+      const data1 = ensureJsonObject(v1.data)
+      const data2 = ensureJsonObject(v2.data)
+
+      // Get all keys from both versions
+      const keys1 = Object.keys(data1)
+      const keys2 = Object.keys(data2)
       const allKeys = [...new Set([...keys1, ...keys2])]
 
       for (const key of allKeys) {
-        const val1 = (v1.data as any)[key]
-        const val2 = (v2.data as any)[key]
+        const val1 = safeGetProperty(data1, key)
+        const val2 = safeGetProperty(data2, key)
 
         if (val1 === undefined && val2 !== undefined) {
-          differences.added.push({ key, value: val2 })
+          differences.added.push({ key: ensureString(key), value: val2 })
         } else if (val1 !== undefined && val2 === undefined) {
-          differences.removed.push({ key, value: val1 })
+          differences.removed.push({ key: ensureString(key), value: val1 })
         } else if (JSON.stringify(val1) !== JSON.stringify(val2)) {
-          differences.modified.push({ key, oldValue: val1, newValue: val2 })
+          differences.modified.push({ 
+            key: ensureString(key), 
+            oldValue: val1, 
+            newValue: val2 
+          })
         }
       }
 
       return {
-        version1: v1,
-        version2: v2,
+        version1: v1 as ContentVersionWithRelations,
+        version2: v2 as ContentVersionWithRelations,
         differences,
       }
-    } catch (error) {
-      throw new DatabaseError(`Failed to compare versions ${version1} and ${version2} for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to compare versions ${version1} and ${version2} for content ${ensureString(contentId)}`, undefined, error)
     }
   }
 
@@ -522,8 +546,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError(`Failed to find versions created by user ${userId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to find versions created by user ${userId}`, undefined, error)
     }
   }
 
@@ -564,8 +588,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
           },
         },
       })
-    } catch (error) {
-      throw new DatabaseError("Failed to find versions by creation date", error)
+    } catch (error: unknown) {
+      throw new DatabaseError("Failed to find versions by creation date", undefined, error)
     }
   }
 
@@ -605,8 +629,8 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
         archivedVersions: archived,
         latestVersion: latest?.version || 0,
       }
-    } catch (error) {
-      throw new DatabaseError(`Failed to get version stats for content ${contentId}`, error)
+    } catch (error: unknown) {
+      throw new DatabaseError(`Failed to get version stats for content ${contentId}`, undefined, error)
     }
   }
 }
