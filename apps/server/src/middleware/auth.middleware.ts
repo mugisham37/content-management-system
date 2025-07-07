@@ -435,4 +435,4 @@ export const requireOwnershipOrAdmin = authMiddleware.requireOwnershipOrAdmin
 export const validateRefreshToken = authMiddleware.validateRefreshToken
 
 // Legacy export for backward compatibility
-export const authMiddleware as default = authMiddleware.authenticate
+export default authMiddleware.authenticate

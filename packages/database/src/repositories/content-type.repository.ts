@@ -50,13 +50,164 @@ export class ContentTypeRepository extends BaseRepository<ContentType, ContentTy
   /**
    * Find content type by name
    */
-  async findByName(name: string, tenantId?: string): Promise<ContentType | null> {
+  async findByName(name: string, tenantId?: string, includeFields = false): Promise<ContentType | null> {
     const where: any = { name }
     if (tenantId) {
       where.tenantId = tenantId
     }
 
-    return this.findFirst(where)
+    const include = includeFields ? { fields: true } : undefined
+    return this.findFirst(where, include)
+  }
+
+  /**
+   * Find content type by ID with tenant and field options
+   */
+  async findByIdWithOptions(id: string, tenantId?: string, includeFields = false): Promise<ContentType | null> {
+    const where: any = { id }
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    try {
+      return await this.model.findFirst({
+        where,
+        include: includeFields ? { 
+          tenant: true,
+          createdBy: true 
+        } : undefined,
+      })
+    } catch (error) {
+      this.handleError(error, 'findByIdWithOptions')
+    }
+  }
+
+  /**
+   * Find many content types with pagination and filtering
+   */
+  async findManyWithPagination(options: {
+    page?: number
+    limit?: number
+    search?: string
+    isActive?: boolean
+    sortBy?: string
+    sortOrder?: "asc" | "desc"
+    tenantId?: string
+    includeFields?: boolean
+  }): Promise<{
+    contentTypes: ContentType[]
+    total: number
+    page: number
+    limit: number
+    totalPages: number
+  }> {
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      isActive,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      tenantId,
+      includeFields = false,
+    } = options
+
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+    if (isActive !== undefined) {
+      where.isActive = isActive
+    }
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { displayName: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ]
+    }
+
+    const orderBy = { [sortBy]: sortOrder }
+
+    const [contentTypes, total] = await Promise.all([
+      this.model.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.model.count({ where }),
+    ])
+
+    return {
+      contentTypes,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    }
+  }
+
+  /**
+   * Get usage count for content type
+   */
+  async getUsageCount(id: string, tenantId?: string): Promise<number> {
+    // This would typically count related content items
+    // For now, return 0 as a placeholder
+    return 0
+  }
+
+  /**
+   * Get content type statistics
+   */
+  async getStats(tenantId?: string): Promise<{
+    totalTypes: number
+    activeTypes: number
+    totalFields: number
+    fieldsByType: Record<string, number>
+    mostUsedTypes: Array<{ id: string; name: string; usageCount: number }>
+  }> {
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    const [totalTypes, activeTypes, allContentTypes] = await Promise.all([
+      this.model.count({ where }),
+      this.model.count({ where: { ...where, isActive: true } }),
+      this.model.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          fields: true,
+        },
+      }),
+    ])
+
+    let totalFields = 0
+    const fieldsByType: Record<string, number> = {}
+
+    allContentTypes.forEach(ct => {
+      const fieldsCount = Array.isArray(ct.fields) ? ct.fields.length : 0
+      totalFields += fieldsCount
+      fieldsByType[ct.name] = fieldsCount
+    })
+
+    // Placeholder for most used types - would need content usage data
+    const mostUsedTypes = allContentTypes.slice(0, 5).map(ct => ({
+      id: ct.id,
+      name: ct.name,
+      usageCount: 0,
+    }))
+
+    return {
+      totalTypes,
+      activeTypes,
+      totalFields,
+      fieldsByType,
+      mostUsedTypes,
+    }
   }
 
   /**

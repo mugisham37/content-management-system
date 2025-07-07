@@ -369,4 +369,4 @@ export const createAdaptiveRateLimit = rateLimitMiddleware.createAdaptiveRateLim
 export { RateLimitMiddleware }
 
 // Legacy exports for backward compatibility
-export const rateLimitMiddleware as default = rateLimitMiddleware.apiRateLimit
+export default rateLimitMiddleware.apiRateLimit

@@ -43,6 +43,18 @@
     "./types": {
       "types": "./src/types/index.ts",
       "default": "./src/types/index.ts"
+    },
+    "./repositories": {
+      "types": "./src/repositories/index.ts",
+      "default": "./src/repositories/index.ts"
+    },
+    "./repositories/content-type.repository": {
+      "types": "./src/repositories/content-type.repository.ts",
+      "default": "./src/repositories/content-type.repository.ts"
+    },
+    "./repositories/field-type.repository": {
+      "types": "./src/repositories/field-type.repository.ts",
+      "default": "./src/repositories/field-type.repository.ts"
     }
   }
 }

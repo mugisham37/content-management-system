@@ -19,6 +19,7 @@
   "dependencies": {
     "@cms-platform/database": "workspace:*",
     "@cms-platform/shared": "workspace:*",
+    "@prisma/client": "^5.7.1",
     "@trpc/server": "^10.45.0",
     "bcryptjs": "^2.4.3",
     "bull": "^4.12.2",

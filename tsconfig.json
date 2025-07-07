@@ -37,5 +37,10 @@
     ".next",
     "dist",
     "build"
+  ],
+  "references": [
+    { "path": "./packages/database" },
+    { "path": "./packages/shared" },
+    { "path": "./apps/server" }
   ]
 }

@@ -23,23 +23,7 @@ export { TranslationRepository } from './repositories/translation.repository'
 export { PluginRepository } from './repositories/plugin.repository'
 export { RouteRepository } from './repositories/route.repository'
 
-// Export services
-export { 
-  ElasticsearchService,
-  initializeElasticsearch,
-  getElasticsearchClient,
-  closeElasticsearchConnection,
-  indexDocument,
-  updateDocument,
-  deleteDocument,
-  searchDocuments,
-  bulkIndexDocuments,
-  reindexCollection,
-  healthCheck,
-  getIndexStats,
-  updateIndexMapping
-} from '../../../apps/server/src/services/elasticsearch.service'
-export type { ElasticsearchConfig } from '../../../apps/server/src/services/elasticsearch.service'
+// Note: Elasticsearch services are exported from the server package to avoid circular dependencies
 
 // Export Prisma types for external use
 export type {

@@ -93,6 +93,9 @@ importers:
       '@cms-platform/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@prisma/client':
+        specifier: ^5.7.1
+        version: 5.22.0(prisma@5.22.0)
       '@trpc/server':
         specifier: ^10.45.0
         version: 10.45.2

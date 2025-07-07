@@ -2,6 +2,99 @@
 // DATABASE TYPES
 // =============================================================================
 
+// Content Type related types
+export interface ContentType {
+  id: string
+  name: string
+  displayName: string
+  description?: string
+  isSystem: boolean
+  fields?: FieldDefinition[]
+  tenantId?: string
+  createdBy?: string
+  updatedBy?: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface FieldType {
+  id: string
+  name: string
+  displayName: string
+  description?: string
+  dataType: string
+  uiType: string
+  isSystem: boolean
+  isBuiltIn: boolean
+  validations?: any[]
+  settings?: Record<string, any>
+  pluginId?: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface CreateContentTypeData {
+  name: string
+  displayName: string
+  description?: string
+  isSystem?: boolean
+  fields?: Omit<FieldDefinition, 'id' | 'contentTypeId' | 'createdAt' | 'updatedAt'>[]
+  tenantId?: string
+  createdBy?: string
+  updatedBy?: string
+}
+
+export interface UpdateContentTypeData {
+  name?: string
+  displayName?: string
+  description?: string
+  isSystem?: boolean
+  fields?: Partial<FieldDefinition>[]
+  updatedBy?: string
+}
+
+export interface ContentTypeWithFields extends ContentType {
+  fields: FieldDefinition[]
+}
+
+export interface FieldDefinition {
+  id: string
+  contentTypeId: string
+  name: string
+  displayName: string
+  type: string
+  description?: string
+  validation?: {
+    required?: boolean
+    unique?: boolean
+    min?: number
+    max?: number
+    minLength?: number
+    maxLength?: number
+    pattern?: string
+    enum?: string[]
+    message?: string
+  }
+  defaultValue?: any
+  isSystem: boolean
+  isLocalized?: boolean
+  settings?: Record<string, any>
+  order?: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface ValidationRule {
+  id: string
+  fieldId: string
+  ruleType: 'minLength' | 'maxLength' | 'pattern' | 'min' | 'max' | 'custom' | 'required' | 'unique' | 'enum'
+  value: string | number | string[]
+  errorMessage?: string
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
 // Extended types for better type safety
 export interface CreateUserInput {
   email: string

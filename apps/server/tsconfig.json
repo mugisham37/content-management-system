@@ -1,4 +1,5 @@
 {
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -23,12 +24,17 @@
       "@/routes/*": ["./src/routes/*"],
       "@/services/*": ["./src/services/*"],
       "@/utils/*": ["./src/utils/*"],
-      "@/types/*": ["./src/types/*"]
+      "@/types/*": ["./src/types/*"],
+      "@cms-platform/database": ["../../packages/database/src"],
+      "@cms-platform/database/*": ["../../packages/database/src/*"],
+      "@cms-platform/shared": ["../../packages/shared/src"],
+      "@cms-platform/shared/*": ["../../packages/shared/src/*"]
     },
     "types": ["node", "jest"],
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "composite": true
   },
   "include": [
     "src/**/*"
@@ -38,6 +44,10 @@
     "dist",
     "**/*.test.ts",
     "**/*.spec.ts"
+  ],
+  "references": [
+    { "path": "../../packages/database" },
+    { "path": "../../packages/shared" }
   ],
   "ts-node": {
     "require": ["tsconfig-paths/register"]

@@ -375,4 +375,55 @@ export const authAudit = {
     getEntityId: (req) => req.user?._id?.toString() || "unknown",
   }),
   refreshToken: createAuditMiddleware({
-    action: "auth.
+    action: "auth.refreshToken",
+    entityType: "user",
+    getEntityId: (req) => req.user?._id?.toString() || "unknown",
+  }),
+  register: createAuditMiddleware({
+    action: "auth.register",
+    entityType: "user",
+    getEntityId: (req) => req.body.email || "unknown",
+    includeRequestBody: true,
+    sensitiveFields: ["password", "passwordConfirm"]
+  }),
+  forgotPassword: createAuditMiddleware({
+    action: "auth.forgotPassword",
+    entityType: "user",
+    getEntityId: (req) => req.body.email || "unknown",
+  }),
+  resetPassword: createAuditMiddleware({
+    action: "auth.resetPassword",
+    entityType: "user",
+    getEntityId: (req) => req.body.email || req.params.token || "unknown",
+    sensitiveFields: ["password", "passwordConfirm"]
+  }),
+}
+
+/**
+ * Audit middleware for API key operations
+ */
+export const apiKeyAudit = {
+  create: createAuditMiddleware({
+    action: "apiKey.create",
+    entityType: "apiKey",
+    getEntityId: (req) => req.body.name || "unknown",
+    includeRequestBody: true,
+    sensitiveFields: ["key", "secret"]
+  }),
+  update: createAuditMiddleware({
+    action: "apiKey.update",
+    entityType: "apiKey",
+    getEntityId: (req) => req.params.id,
+    includeRequestBody: true,
+  }),
+  delete: createAuditMiddleware({
+    action: "apiKey.delete",
+    entityType: "apiKey",
+    getEntityId: (req) => req.params.id,
+  }),
+  regenerate: createAuditMiddleware({
+    action: "apiKey.regenerate",
+    entityType: "apiKey",
+    getEntityId: (req) => req.params.id,
+  }),
+}

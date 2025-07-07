@@ -1,37 +1,59 @@
+
+import { PrismaClient } from "@prisma/client"
+import {
+  type ContentType,
+  type ContentTypeWithFields,
+  type CreateContentTypeInput,
+  type UpdateContentTypeInput,
+  type PaginatedContentTypes,
+  type ContentTypeValidationResult,
+  type ContentTypeStats,
+  type FieldDefinition,
+  type CreateFieldDefinition,
+  type FieldType,
+  transformPrismaContentType,
+  transformPrismaContentTypeWithFields,
+  serializeFieldsToJson,
+  parseFieldsFromJson,
+  validateContentTypeData,
+  validateFieldDefinition,
+  mergeFields,
+  generateId,
+} from "@cms-platform/shared"
 import { ContentTypeRepository } from "@cms-platform/database/repositories/content-type.repository"
 import { FieldTypeRepository } from "@cms-platform/database/repositories/field-type.repository"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
 import { auditService } from "./audit.service"
-import type { 
-  ContentType, 
-  FieldType, 
-  CreateContentTypeData, 
-  UpdateContentTypeData,
-  ContentTypeWithFields,
-  FieldDefinition,
-  ValidationRule
-} from "@cms-platform/database/types"
 
 export interface ContentTypeServiceOptions {
   enableCache?: boolean
   cacheTtl?: number
   enableAudit?: boolean
+  maxFieldsPerType?: number
+  enableValidation?: boolean
 }
 
-export interface ContentTypeValidationResult {
-  isValid: boolean
-  errors: string[]
-  warnings: string[]
+export interface BulkOperationResult {
+  successful: string[]
+  failed: Array<{ id: string; error: string }>
+  total: number
 }
 
-export interface ContentTypeStats {
-  totalTypes: number
-  activeTypes: number
-  totalFields: number
-  fieldsByType: Record<string, number>
-  mostUsedTypes: Array<{ id: string; name: string; usageCount: number }>
+export interface ContentTypeExportData {
+  contentType: ContentTypeWithFields
+  metadata: {
+    exportedAt: Date
+    version: string
+    checksum: string
+  }
+}
+
+export interface ContentTypeImportOptions {
+  overwrite?: boolean
+  validateOnly?: boolean
+  skipValidation?: boolean
 }
 
 export class ContentTypeService {
@@ -39,13 +61,15 @@ export class ContentTypeService {
   private fieldTypeRepo: FieldTypeRepository
   private options: ContentTypeServiceOptions
 
-  constructor(options: ContentTypeServiceOptions = {}) {
-    this.contentTypeRepo = new ContentTypeRepository()
-    this.fieldTypeRepo = new FieldTypeRepository()
+  constructor(prisma: PrismaClient, options: ContentTypeServiceOptions = {}) {
+    this.contentTypeRepo = new ContentTypeRepository(prisma)
+    this.fieldTypeRepo = new FieldTypeRepository(prisma)
     this.options = {
       enableCache: true,
       cacheTtl: 3600, // 1 hour
       enableAudit: true,
+      maxFieldsPerType: 100,
+      enableValidation: true,
       ...options,
     }
 
@@ -55,14 +79,20 @@ export class ContentTypeService {
   /**
    * Create a new content type
    */
-  async createContentType(
-    data: CreateContentTypeData,
-    userId?: string,
-    tenantId?: string
-  ): Promise<ContentType> {
+  async createContentType(data: CreateContentTypeInput, userId?: string, tenantId?: string): Promise<ContentType> {
     try {
       // Validate content type data
-      await this.validateContentTypeData(data)
+      if (this.options.enableValidation) {
+        const validation = validateContentTypeData(data)
+        if (!validation.isValid) {
+          throw ApiError.validationError("Content type validation failed", validation.errors)
+        }
+      }
+
+      // Check field count limit
+      if (data.fields && data.fields.length > this.options.maxFieldsPerType!) {
+        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+      }
 
       // Check if content type with same name exists
       const existing = await this.contentTypeRepo.findByName(data.name, tenantId)
@@ -75,13 +105,26 @@ export class ContentTypeService {
         await this.validateFieldDefinitions(data.fields)
       }
 
+      // Prepare data for creation
+      const createData: any = {
+        name: data.name,
+        displayName: data.displayName,
+        description: data.description,
+        isSystem: data.isSystem || false,
+        fields: data.fields
+          ? serializeFieldsToJson(
+              data.fields.map((field) => ({
+                ...field,
+                contentTypeId: "", // Will be set after creation
+              })),
+            )
+          : [],
+        tenant: tenantId ? { connect: { id: tenantId } } : undefined,
+        createdBy: userId ? { connect: { id: userId } } : undefined,
+      }
+
       // Create content type
-      const contentType = await this.contentTypeRepo.create({
-        ...data,
-        tenantId,
-        createdBy: userId,
-        updatedBy: userId,
-      })
+      const contentType = await this.contentTypeRepo.create(createData)
 
       // Clear cache
       if (this.options.enableCache) {
@@ -109,7 +152,7 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return contentType
+      return transformPrismaContentType(contentType)
     } catch (error) {
       logger.error("Failed to create content type:", error)
       throw error
@@ -119,14 +162,10 @@ export class ContentTypeService {
   /**
    * Get content type by ID
    */
-  async getContentTypeById(
-    id: string,
-    tenantId?: string,
-    includeFields = true
-  ): Promise<ContentTypeWithFields | null> {
+  async getContentTypeById(id: string, tenantId?: string, includeFields = true): Promise<ContentTypeWithFields | null> {
     try {
       const cacheKey = `content-type:${id}:${includeFields}`
-      
+
       // Try cache first
       if (this.options.enableCache) {
         const cached = await cacheService.get<ContentTypeWithFields>(cacheKey, tenantId)
@@ -135,17 +174,23 @@ export class ContentTypeService {
         }
       }
 
-      const contentType = await this.contentTypeRepo.findById(id, tenantId, includeFields)
-      
+      const contentType = await this.contentTypeRepo.findByIdWithOptions(id, tenantId, includeFields)
+
+      if (!contentType) {
+        return null
+      }
+
+      const result = transformPrismaContentTypeWithFields(contentType)
+
       // Cache result
-      if (this.options.enableCache && contentType) {
-        await cacheService.set(cacheKey, contentType, {
+      if (this.options.enableCache) {
+        await cacheService.set(cacheKey, result, {
           ttl: this.options.cacheTtl,
           namespace: tenantId,
         })
       }
 
-      return contentType
+      return result
     } catch (error) {
       logger.error("Failed to get content type by ID:", error)
       throw error
@@ -158,11 +203,11 @@ export class ContentTypeService {
   async getContentTypeByName(
     name: string,
     tenantId?: string,
-    includeFields = true
+    includeFields = true,
   ): Promise<ContentTypeWithFields | null> {
     try {
       const cacheKey = `content-type:name:${name}:${includeFields}`
-      
+
       // Try cache first
       if (this.options.enableCache) {
         const cached = await cacheService.get<ContentTypeWithFields>(cacheKey, tenantId)
@@ -172,16 +217,22 @@ export class ContentTypeService {
       }
 
       const contentType = await this.contentTypeRepo.findByName(name, tenantId, includeFields)
-      
+
+      if (!contentType) {
+        return null
+      }
+
+      const result = transformPrismaContentTypeWithFields(contentType)
+
       // Cache result
-      if (this.options.enableCache && contentType) {
-        await cacheService.set(cacheKey, contentType, {
+      if (this.options.enableCache) {
+        await cacheService.set(cacheKey, result, {
           ttl: this.options.cacheTtl,
           namespace: tenantId,
         })
       }
 
-      return contentType
+      return result
     } catch (error) {
       logger.error("Failed to get content type by name:", error)
       throw error
@@ -200,13 +251,7 @@ export class ContentTypeService {
     sortOrder?: "asc" | "desc"
     tenantId?: string
     includeFields?: boolean
-  }): Promise<{
-    contentTypes: ContentTypeWithFields[]
-    total: number
-    page: number
-    limit: number
-    totalPages: number
-  }> {
+  }): Promise<PaginatedContentTypes> {
     try {
       const {
         page = 1,
@@ -220,16 +265,16 @@ export class ContentTypeService {
       } = options
 
       const cacheKey = `content-types:list:${JSON.stringify(options)}`
-      
+
       // Try cache first
       if (this.options.enableCache) {
-        const cached = await cacheService.get(cacheKey, tenantId)
+        const cached = await cacheService.get<PaginatedContentTypes>(cacheKey, tenantId)
         if (cached) {
           return cached
         }
       }
 
-      const result = await this.contentTypeRepo.findMany({
+      const result = await this.contentTypeRepo.findManyWithPagination({
         page,
         limit,
         search,
@@ -240,15 +285,23 @@ export class ContentTypeService {
         includeFields,
       })
 
+      const transformedResult: PaginatedContentTypes = {
+        contentTypes: result.contentTypes.map((ct) => transformPrismaContentTypeWithFields(ct)),
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+      }
+
       // Cache result
       if (this.options.enableCache) {
-        await cacheService.set(cacheKey, result, {
+        await cacheService.set(cacheKey, transformedResult, {
           ttl: this.options.cacheTtl / 2, // Shorter TTL for lists
           namespace: tenantId,
         })
       }
 
-      return result
+      return transformedResult
     } catch (error) {
       logger.error("Failed to list content types:", error)
       throw error
@@ -260,13 +313,13 @@ export class ContentTypeService {
    */
   async updateContentType(
     id: string,
-    data: UpdateContentTypeData,
+    data: UpdateContentTypeInput,
     userId?: string,
-    tenantId?: string
+    tenantId?: string,
   ): Promise<ContentType> {
     try {
       // Get existing content type
-      const existing = await this.contentTypeRepo.findById(id, tenantId)
+      const existing = await this.contentTypeRepo.findById(id)
       if (!existing) {
         throw ApiError.notFound("Content type not found")
       }
@@ -282,13 +335,26 @@ export class ContentTypeService {
       // Validate field definitions if provided
       if (data.fields) {
         await this.validateFieldDefinitions(data.fields)
+
+        // Check field count limit
+        if (data.fields.length > this.options.maxFieldsPerType!) {
+          throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+        }
+      }
+
+      // Prepare update data
+      const updateData: any = {}
+      if (data.name !== undefined) updateData.name = data.name
+      if (data.displayName !== undefined) updateData.displayName = data.displayName
+      if (data.description !== undefined) updateData.description = data.description
+      if (data.fields !== undefined) {
+        const existingFields = parseFieldsFromJson(existing.fields)
+        const updatedFields = mergeFields(existingFields, data.fields)
+        updateData.fields = serializeFieldsToJson(updatedFields)
       }
 
       // Update content type
-      const contentType = await this.contentTypeRepo.update(id, {
-        ...data,
-        updatedBy: userId,
-      }, tenantId)
+      const contentType = await this.contentTypeRepo.update(id, updateData)
 
       // Clear cache
       if (this.options.enableCache) {
@@ -315,7 +381,7 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return contentType
+      return transformPrismaContentType(contentType)
     } catch (error) {
       logger.error("Failed to update content type:", error)
       throw error
@@ -325,15 +391,10 @@ export class ContentTypeService {
   /**
    * Delete content type
    */
-  async deleteContentType(
-    id: string,
-    userId?: string,
-    tenantId?: string,
-    force = false
-  ): Promise<void> {
+  async deleteContentType(id: string, userId?: string, tenantId?: string, force = false): Promise<void> {
     try {
       // Get existing content type
-      const existing = await this.contentTypeRepo.findById(id, tenantId)
+      const existing = await this.contentTypeRepo.findById(id)
       if (!existing) {
         throw ApiError.notFound("Content type not found")
       }
@@ -343,13 +404,13 @@ export class ContentTypeService {
         const usageCount = await this.contentTypeRepo.getUsageCount(id, tenantId)
         if (usageCount > 0) {
           throw ApiError.conflict(
-            `Cannot delete content type '${existing.name}' as it is used by ${usageCount} content items. Use force=true to delete anyway.`
+            `Cannot delete content type '${existing.name}' as it is used by ${usageCount} content items. Use force=true to delete anyway.`,
           )
         }
       }
 
       // Delete content type
-      await this.contentTypeRepo.delete(id, tenantId)
+      await this.contentTypeRepo.delete(id)
 
       // Clear cache
       if (this.options.enableCache) {
@@ -388,28 +449,51 @@ export class ContentTypeService {
    */
   async addField(
     contentTypeId: string,
-    fieldDefinition: FieldDefinition,
+    fieldDefinition: CreateFieldDefinition,
     userId?: string,
-    tenantId?: string
+    tenantId?: string,
   ): Promise<ContentType> {
     try {
       // Get existing content type
-      const contentType = await this.contentTypeRepo.findById(contentTypeId, tenantId, true)
+      const contentType = await this.contentTypeRepo.findById(contentTypeId)
       if (!contentType) {
         throw ApiError.notFound("Content type not found")
       }
 
       // Validate field definition
-      await this.validateFieldDefinitions([fieldDefinition])
+      if (this.options.enableValidation) {
+        const validation = validateFieldDefinition(fieldDefinition)
+        if (!validation.isValid) {
+          throw ApiError.validationError("Field validation failed", validation.errors)
+        }
+      }
 
       // Check if field name already exists
-      const existingField = contentType.fields?.find((f: any) => f.name === fieldDefinition.name)
+      const fields = parseFieldsFromJson(contentType.fields)
+      const existingField = fields.find((f) => f.name === fieldDefinition.name)
       if (existingField) {
         throw ApiError.conflict(`Field with name '${fieldDefinition.name}' already exists`)
       }
 
+      // Check field count limit
+      if (fields.length >= this.options.maxFieldsPerType!) {
+        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+      }
+
       // Add field to content type
-      const updatedContentType = await this.contentTypeRepo.addField(contentTypeId, fieldDefinition, tenantId)
+      const newField: FieldDefinition = {
+        ...fieldDefinition,
+        id: generateId(),
+        required: fieldDefinition.required || false,
+        contentTypeId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+
+      const updatedFields = [...fields, newField]
+      const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
+        fields: serializeFieldsToJson(updatedFields),
+      })
 
       // Clear cache
       if (this.options.enableCache) {
@@ -437,7 +521,7 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return updatedContentType
+      return transformPrismaContentType(updatedContentType)
     } catch (error) {
       logger.error("Failed to add field to content type:", error)
       throw error
@@ -450,39 +534,53 @@ export class ContentTypeService {
   async updateField(
     contentTypeId: string,
     fieldId: string,
-    fieldDefinition: Partial<FieldDefinition>,
+    fieldDefinition: Partial<CreateFieldDefinition>,
     userId?: string,
-    tenantId?: string
+    tenantId?: string,
   ): Promise<ContentType> {
     try {
       // Get existing content type
-      const contentType = await this.contentTypeRepo.findById(contentTypeId, tenantId, true)
+      const contentType = await this.contentTypeRepo.findById(contentTypeId)
       if (!contentType) {
         throw ApiError.notFound("Content type not found")
       }
 
       // Find existing field
-      const existingField = contentType.fields?.find((f: any) => f.id === fieldId)
-      if (!existingField) {
+      const fields = parseFieldsFromJson(contentType.fields)
+      const fieldIndex = fields.findIndex((f) => f.id === fieldId)
+      if (fieldIndex === -1) {
         throw ApiError.notFound("Field not found")
       }
 
+      const existingField = fields[fieldIndex]
+
       // Validate field definition
-      if (fieldDefinition.name || fieldDefinition.type || fieldDefinition.validation) {
+      if (this.options.enableValidation) {
         const fullFieldDef = { ...existingField, ...fieldDefinition }
-        await this.validateFieldDefinitions([fullFieldDef as FieldDefinition])
+        const validation = validateFieldDefinition(fullFieldDef)
+        if (!validation.isValid) {
+          throw ApiError.validationError("Field validation failed", validation.errors)
+        }
       }
 
       // Check if new field name conflicts
       if (fieldDefinition.name && fieldDefinition.name !== existingField.name) {
-        const nameConflict = contentType.fields?.find((f: any) => f.name === fieldDefinition.name && f.id !== fieldId)
+        const nameConflict = fields.find((f) => f.name === fieldDefinition.name && f.id !== fieldId)
         if (nameConflict) {
           throw ApiError.conflict(`Field with name '${fieldDefinition.name}' already exists`)
         }
       }
 
       // Update field
-      const updatedContentType = await this.contentTypeRepo.updateField(contentTypeId, fieldId, fieldDefinition, tenantId)
+      fields[fieldIndex] = {
+        ...existingField,
+        ...fieldDefinition,
+        updatedAt: new Date(),
+      }
+
+      const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
+        fields: serializeFieldsToJson(fields),
+      })
 
       // Clear cache
       if (this.options.enableCache) {
@@ -511,7 +609,7 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return updatedContentType
+      return transformPrismaContentType(updatedContentType)
     } catch (error) {
       logger.error("Failed to update field in content type:", error)
       throw error
@@ -521,27 +619,26 @@ export class ContentTypeService {
   /**
    * Remove field from content type
    */
-  async removeField(
-    contentTypeId: string,
-    fieldId: string,
-    userId?: string,
-    tenantId?: string
-  ): Promise<ContentType> {
+  async removeField(contentTypeId: string, fieldId: string, userId?: string, tenantId?: string): Promise<ContentType> {
     try {
       // Get existing content type
-      const contentType = await this.contentTypeRepo.findById(contentTypeId, tenantId, true)
+      const contentType = await this.contentTypeRepo.findById(contentTypeId)
       if (!contentType) {
         throw ApiError.notFound("Content type not found")
       }
 
       // Find existing field
-      const existingField = contentType.fields?.find((f: any) => f.id === fieldId)
+      const fields = parseFieldsFromJson(contentType.fields)
+      const existingField = fields.find((f) => f.id === fieldId)
       if (!existingField) {
         throw ApiError.notFound("Field not found")
       }
 
       // Remove field
-      const updatedContentType = await this.contentTypeRepo.removeField(contentTypeId, fieldId, tenantId)
+      const updatedFields = fields.filter((f) => f.id !== fieldId)
+      const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
+        fields: serializeFieldsToJson(updatedFields),
+      })
 
       // Clear cache
       if (this.options.enableCache) {
@@ -570,7 +667,7 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return updatedContentType
+      return transformPrismaContentType(updatedContentType)
     } catch (error) {
       logger.error("Failed to remove field from content type:", error)
       throw error
@@ -583,7 +680,7 @@ export class ContentTypeService {
   async getStats(tenantId?: string): Promise<ContentTypeStats> {
     try {
       const cacheKey = "content-type:stats"
-      
+
       // Try cache first
       if (this.options.enableCache) {
         const cached = await cacheService.get<ContentTypeStats>(cacheKey, tenantId)
@@ -610,303 +707,484 @@ export class ContentTypeService {
   }
 
   /**
-   * Validate content type data
+   * Bulk create content types
    */
-  private async validateContentTypeData(data: CreateContentTypeData): Promise<void> {
-    const errors: string[] = []
-
-    // Validate name
-    if (!data.name || data.name.trim().length === 0) {
-      errors.push("Content type name is required")
-    } else if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(data.name)) {
-      errors.push("Content type name must start with a letter and contain only letters, numbers, and underscores")
+  async bulkCreateContentTypes(
+    contentTypes: CreateContentTypeInput[],
+    userId?: string,
+    tenantId?: string,
+  ): Promise<BulkOperationResult> {
+    const result: BulkOperationResult = {
+      successful: [],
+      failed: [],
+      total: contentTypes.length,
     }
 
-    // Validate display name
-    if (!data.displayName || data.displayName.trim().length === 0) {
-      errors.push("Content type display name is required")
+    for (const contentTypeData of contentTypes) {
+      try {
+        const contentType = await this.createContentType(contentTypeData, userId, tenantId)
+        result.successful.push(contentType.id)
+      } catch (error) {
+        result.failed.push({
+          id: contentTypeData.name,
+          error: error instanceof Error ? error.message : "Unknown error",
+        })
+      }
     }
 
-    if (errors.length > 0) {
-      throw ApiError.validationError("Content type validation failed", errors)
+    logger.info("Bulk content type creation completed", {
+      total: result.total,
+      successful: result.successful.length,
+      failed: result.failed.length,
+      userId,
+      tenantId,
+    })
+
+    return result
+  }
+
+  /**
+   * Bulk delete content types
+   */
+  async bulkDeleteContentTypes(
+    ids: string[],
+    userId?: string,
+    tenantId?: string,
+    force = false,
+  ): Promise<BulkOperationResult> {
+    const result: BulkOperationResult = {
+      successful: [],
+      failed: [],
+      total: ids.length,
+    }
+
+    for (const id of ids) {
+      try {
+        await this.deleteContentType(id, userId, tenantId, force)
+        result.successful.push(id)
+      } catch (error) {
+        result.failed.push({
+          id,
+          error: error instanceof Error ? error.message : "Unknown error",
+        })
+      }
+    }
+
+    logger.info("Bulk content type deletion completed", {
+      total: result.total,
+      successful: result.successful.length,
+      failed: result.failed.length,
+      userId,
+      tenantId,
+      force,
+    })
+
+    return result
+  }
+
+  /**
+   * Clone content type
+   */
+  async cloneContentType(id: string, newName: string, userId?: string, tenantId?: string): Promise<ContentType> {
+    try {
+      const original = await this.getContentTypeById(id, tenantId, true)
+      if (!original) {
+        throw ApiError.notFound("Content type not found")
+      }
+
+      const cloneData: CreateContentTypeInput = {
+        name: newName,
+        displayName: `${original.displayName} (Copy)`,
+        description: original.description,
+        fields: original.fields?.map((field) => ({
+          name: field.name,
+          type: field.type,
+          displayName: field.displayName,
+          description: field.description,
+          required: field.required,
+          defaultValue: field.defaultValue,
+          validationRules: field.validationRules,
+          options: field.options,
+        })),
+        isSystem: false, // Cloned types are never system types
+      }
+
+      const cloned = await this.createContentType(cloneData, userId, tenantId)
+
+      logger.info("Content type cloned", {
+        originalId: id,
+        clonedId: cloned.id,
+        newName,
+        userId,
+        tenantId,
+      })
+
+      return cloned
+    } catch (error) {
+      logger.error("Failed to clone content type:", error)
+      throw error
     }
   }
 
   /**
-   * Validate field definitions
+   * Export content type
    */
-  private async validateFieldDefinitions(fields: FieldDefinition[]): Promise<void> {
-    const errors: string[] = []
+  async exportContentType(id: string, tenantId?: string): Promise<ContentTypeExportData> {
+    try {
+      const contentType = await this.getContentTypeById(id, tenantId, true)
+      if (!contentType) {
+        throw ApiError.notFound("Content type not found")
+      }
+
+      const exportData: ContentTypeExportData = {
+        contentType,
+        metadata: {
+          exportedAt: new Date(),
+          version: "1.0",
+          checksum: this.generateChecksum(contentType),
+        },
+      }
+
+      logger.info("Content type exported", {
+        id,
+        name: contentType.name,
+        tenantId,
+      })
+
+      return exportData
+    } catch (error) {
+      logger.error("Failed to export content type:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Import content type
+   */
+  async importContentType(
+    exportData: ContentTypeExportData,
+    options: ContentTypeImportOptions = {},
+    userId?: string,
+    tenantId?: string,
+  ): Promise<ContentType> {
+    try {
+      const { overwrite = false, validateOnly = false, skipValidation = false } = options
+      const { contentType } = exportData
+
+      // Validate checksum if not skipping validation
+      if (!skipValidation) {
+        const expectedChecksum = this.generateChecksum(contentType)
+        if (exportData.metadata.checksum !== expectedChecksum) {
+          throw ApiError.validationError("Import data checksum validation failed")
+        }
+      }
+
+      // Check if content type already exists
+      const existing = await this.getContentTypeByName(contentType.name, tenantId)
+      if (existing && !overwrite) {
+        throw ApiError.conflict(
+          `Content type with name '${contentType.name}' already exists. Use overwrite=true to replace it.`,
+        )
+      }
+
+      // If validate only, return early
+      if (validateOnly) {
+        logger.info("Content type import validation successful", {
+          name: contentType.name,
+          tenantId,
+        })
+        return contentType as ContentType
+      }
+
+      const importData: CreateContentTypeInput = {
+        name: contentType.name,
+        displayName: contentType.displayName,
+        description: contentType.description,
+        fields: contentType.fields?.map((field) => ({
+          name: field.name,
+          type: field.type,
+          displayName: field.displayName,
+          description: field.description,
+          required: field.required,
+          defaultValue: field.defaultValue,
+          validationRules: field.validationRules,
+          options: field.options,
+        })),
+        isSystem: false, // Imported types are never system types
+      }
+
+      let result: ContentType
+
+      if (existing && overwrite) {
+        // Update existing content type
+        result = await this.updateContentType(existing.id, importData, userId, tenantId)
+      } else {
+        // Create new content type
+        result = await this.createContentType(importData, userId, tenantId)
+      }
+
+      logger.info("Content type imported", {
+        id: result.id,
+        name: result.name,
+        overwrite,
+        userId,
+        tenantId,
+      })
+
+      return result
+    } catch (error) {
+      logger.error("Failed to import content type:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Validate content type structure
+   */
+  async validateContentType(id: string, tenantId?: string): Promise<ContentTypeValidationResult> {
+    try {
+      const contentType = await this.getContentTypeById(id, tenantId, true)
+      if (!contentType) {
+        throw ApiError.notFound("Content type not found")
+      }
+
+      const validation = validateContentTypeData({
+        name: contentType.name,
+        displayName: contentType.displayName,
+        description: contentType.description,
+        fields:
+          contentType.fields?.map((field) => ({
+            name: field.name,
+            type: field.type,
+            displayName: field.displayName,
+            description: field.description,
+            required: field.required,
+            defaultValue: field.defaultValue,
+            validationRules: field.validationRules,
+            options: field.options,
+          })) || [],
+      })
+
+      logger.info("Content type validation completed", {
+        id,
+        name: contentType.name,
+        isValid: validation.isValid,
+        errorsCount: validation.errors?.length || 0,
+        tenantId,
+      })
+
+      return validation
+    } catch (error) {
+      logger.error("Failed to validate content type:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Get available field types
+   */
+  async getAvailableFieldTypes(): Promise<FieldType[]> {
+    try {
+      const cacheKey = "field-types:available"
+
+      // Try cache first
+      if (this.options.enableCache) {
+        const cached = await cacheService.get<FieldType[]>(cacheKey)
+        if (cached) {
+          return cached
+        }
+      }
+
+      const fieldTypes = await this.fieldTypeRepo.findAll()
+
+      // Cache result
+      if (this.options.enableCache) {
+        await cacheService.set(cacheKey, fieldTypes, {
+          ttl: this.options.cacheTtl * 2, // Longer TTL for field types
+        })
+      }
+
+      return fieldTypes
+    } catch (error) {
+      logger.error("Failed to get available field types:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Search content types
+   */
+  async searchContentTypes(
+    query: string,
+    options: {
+      tenantId?: string
+      limit?: number
+      includeFields?: boolean
+      searchInFields?: boolean
+    } = {},
+  ): Promise<ContentTypeWithFields[]> {
+    try {
+      const { tenantId, limit = 50, includeFields = false, searchInFields = false } = options
+
+      const cacheKey = `content-types:search:${query}:${JSON.stringify(options)}`
+
+      // Try cache first
+      if (this.options.enableCache) {
+        const cached = await cacheService.get<ContentTypeWithFields[]>(cacheKey, tenantId)
+        if (cached) {
+          return cached
+        }
+      }
+
+      const results = await this.contentTypeRepo.search(query, {
+        tenantId,
+        limit,
+        includeFields,
+        searchInFields,
+      })
+
+      const transformedResults = results.map((ct) => transformPrismaContentTypeWithFields(ct))
+
+      // Cache result
+      if (this.options.enableCache) {
+        await cacheService.set(cacheKey, transformedResults, {
+          ttl: this.options.cacheTtl / 4, // Shorter TTL for search results
+          namespace: tenantId,
+        })
+      }
+
+      return transformedResults
+    } catch (error) {
+      logger.error("Failed to search content types:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Reorder fields in content type
+   */
+  async reorderFields(
+    contentTypeId: string,
+    fieldOrder: string[],
+    userId?: string,
+    tenantId?: string,
+  ): Promise<ContentType> {
+    try {
+      const contentType = await this.contentTypeRepo.findById(contentTypeId)
+      if (!contentType) {
+        throw ApiError.notFound("Content type not found")
+      }
+
+      const fields = parseFieldsFromJson(contentType.fields)
+
+      // Validate that all field IDs are present
+      const fieldIds = fields.map((f) => f.id)
+      const missingIds = fieldOrder.filter((id) => !fieldIds.includes(id))
+      const extraIds = fieldIds.filter((id) => !fieldOrder.includes(id))
+
+      if (missingIds.length > 0 || extraIds.length > 0) {
+        throw ApiError.validationError("Field order does not match existing fields")
+      }
+
+      // Reorder fields
+      const reorderedFields = fieldOrder.map((id) => {
+        const field = fields.find((f) => f.id === id)!
+        return { ...field, updatedAt: new Date() }
+      })
+
+      const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
+        fields: serializeFieldsToJson(reorderedFields),
+      })
+
+      // Clear cache
+      if (this.options.enableCache) {
+        await this.clearContentTypeCache(tenantId)
+      }
+
+      // Audit log
+      if (this.options.enableAudit && userId) {
+        await auditService.log({
+          action: "content_type.reorder_fields",
+          entityType: "ContentType",
+          entityId: contentTypeId,
+          userId,
+          details: {
+            fieldOrder,
+          },
+        })
+      }
+
+      logger.info("Fields reordered in content type", {
+        contentTypeId,
+        fieldsCount: fieldOrder.length,
+        userId,
+        tenantId,
+      })
+
+      return transformPrismaContentType(updatedContentType)
+    } catch (error) {
+      logger.error("Failed to reorder fields:", error)
+      throw error
+    }
+  }
+
+  // Private helper methods
+
+  private async validateFieldDefinitions(fields: CreateFieldDefinition[]): Promise<void> {
+    if (!this.options.enableValidation) return
+
     const fieldNames = new Set<string>()
 
     for (const field of fields) {
-      // Validate field name
-      if (!field.name || field.name.trim().length === 0) {
-        errors.push("Field name is required")
-        continue
-      }
-
-      if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(field.name)) {
-        errors.push(`Field '${field.name}' must start with a letter and contain only letters, numbers, and underscores`)
-      }
-
       // Check for duplicate field names
       if (fieldNames.has(field.name)) {
-        errors.push(`Duplicate field name: ${field.name}`)
+        throw ApiError.validationError(`Duplicate field name: ${field.name}`)
       }
       fieldNames.add(field.name)
 
-      // Validate field type
-      if (!field.type) {
-        errors.push(`Field '${field.name}' must have a type`)
-        continue
+      // Validate individual field
+      const validation = validateFieldDefinition(field)
+      if (!validation.isValid) {
+        throw ApiError.validationError(`Field '${field.name}' validation failed`, validation.errors)
       }
-
-      // Validate field type exists
-      const fieldType = await this.fieldTypeRepo.findByName(field.type)
-      if (!fieldType) {
-        errors.push(`Invalid field type '${field.type}' for field '${field.name}'`)
-      }
-
-      // Validate display name
-      if (!field.displayName || field.displayName.trim().length === 0) {
-        errors.push(`Field '${field.name}' must have a display name`)
-      }
-
-      // Validate field-specific rules
-      await this.validateFieldSpecificRules(field, errors)
-    }
-
-    if (errors.length > 0) {
-      throw ApiError.validationError("Field validation failed", errors)
     }
   }
 
-  /**
-   * Validate field-specific rules
-   */
-  private async validateFieldSpecificRules(field: FieldDefinition, errors: string[]): Promise<void> {
-    // Validate based on field type
-    switch (field.type) {
-      case "reference":
-        if (!field.settings?.referenceType) {
-          errors.push(`Reference field '${field.name}' must specify a reference type`)
-        }
-        break
-
-      case "enum":
-        if (!field.validation?.enum || field.validation.enum.length === 0) {
-          errors.push(`Enum field '${field.name}' must specify enum values`)
-        }
-        break
-
-      case "relation":
-        if (!field.settings?.relationTo) {
-          errors.push(`Relation field '${field.name}' must specify relation target`)
-        }
-        break
-
-      case "number":
-        if (field.validation?.min !== undefined && field.validation?.max !== undefined) {
-          if (field.validation.min > field.validation.max) {
-            errors.push(`Number field '${field.name}' min value cannot be greater than max value`)
-          }
-        }
-        break
-
-      case "string":
-      case "text":
-        if (field.validation?.minLength !== undefined && field.validation?.maxLength !== undefined) {
-          if (field.validation.minLength > field.validation.maxLength) {
-            errors.push(`Text field '${field.name}' min length cannot be greater than max length`)
-          }
-        }
-        break
-    }
-  }
-
-  /**
-   * Clear content type cache
-   */
   private async clearContentTypeCache(tenantId?: string): Promise<void> {
     try {
-      await cacheService.deletePattern("content-type*", tenantId)
-      await cacheService.deletePattern("content-types*", tenantId)
-    } catch (error) {
-      logger.error("Failed to clear content type cache:", error)
-    }
-  }
+      const patterns = ["content-type:*", "content-types:*", "field-types:*"]
 
-  /**
-   * Validate content against content type
-   */
-  async validateContent(
-    contentTypeId: string,
-    content: Record<string, any>,
-    tenantId?: string
-  ): Promise<ContentTypeValidationResult> {
-    try {
-      const contentType = await this.getContentTypeById(contentTypeId, tenantId, true)
-      if (!contentType) {
-        return {
-          isValid: false,
-          errors: ["Content type not found"],
-          warnings: [],
-        }
-      }
-
-      const errors: string[] = []
-      const warnings: string[] = []
-
-      // Validate each field
-      for (const field of contentType.fields || []) {
-        const value = content[field.name]
-        const fieldErrors = await this.validateFieldValue(field, value)
-        errors.push(...fieldErrors)
-      }
-
-      // Check for unknown fields
-      const knownFields = new Set((contentType.fields || []).map((f: any) => f.name))
-      for (const key of Object.keys(content)) {
-        if (!knownFields.has(key)) {
-          warnings.push(`Unknown field: ${key}`)
-        }
-      }
-
-      return {
-        isValid: errors.length === 0,
-        errors,
-        warnings,
+      for (const pattern of patterns) {
+        await cacheService.deletePattern(pattern, tenantId)
       }
     } catch (error) {
-      logger.error("Failed to validate content:", error)
-      return {
-        isValid: false,
-        errors: ["Validation failed due to internal error"],
-        warnings: [],
-      }
+      logger.warn("Failed to clear content type cache:", error)
     }
   }
 
-  /**
-   * Validate field value
-   */
-  private async validateFieldValue(field: any, value: any): Promise<string[]> {
-    const errors: string[] = []
-    const validation = field.validation || {}
+  private generateChecksum(contentType: ContentTypeWithFields): string {
+    const data = JSON.stringify({
+      name: contentType.name,
+      displayName: contentType.displayName,
+      description: contentType.description,
+      fields: contentType.fields?.map((f) => ({
+        name: f.name,
+        type: f.type,
+        required: f.required,
+        validationRules: f.validationRules,
+      })),
+    })
 
-    // Check required
-    if (validation.required && (value === undefined || value === null || value === "")) {
-      errors.push(`Field '${field.displayName}' is required`)
-      return errors
+    // Simple checksum implementation (in production, use a proper hash function)
+    let hash = 0
+    for (let i = 0; i < data.length; i++) {
+      const char = data.charCodeAt(i)
+      hash = (hash << 5) - hash + char
+      hash = hash & hash // Convert to 32-bit integer
     }
-
-    // Skip further validation if value is empty and not required
-    if (value === undefined || value === null || value === "") {
-      return errors
-    }
-
-    // Type-specific validation
-    switch (field.type) {
-      case "string":
-      case "text":
-        if (typeof value !== "string") {
-          errors.push(`Field '${field.displayName}' must be a string`)
-        } else {
-          if (validation.minLength && value.length < validation.minLength) {
-            errors.push(`Field '${field.displayName}' must be at least ${validation.minLength} characters`)
-          }
-          if (validation.maxLength && value.length > validation.maxLength) {
-            errors.push(`Field '${field.displayName}' must be at most ${validation.maxLength} characters`)
-          }
-          if (validation.pattern && !new RegExp(validation.pattern).test(value)) {
-            errors.push(`Field '${field.displayName}' format is invalid`)
-          }
-        }
-        break
-
-      case "number":
-        if (typeof value !== "number") {
-          errors.push(`Field '${field.displayName}' must be a number`)
-        } else {
-          if (validation.min !== undefined && value < validation.min) {
-            errors.push(`Field '${field.displayName}' must be at least ${validation.min}`)
-          }
-          if (validation.max !== undefined && value > validation.max) {
-            errors.push(`Field '${field.displayName}' must be at most ${validation.max}`)
-          }
-        }
-        break
-
-      case "boolean":
-        if (typeof value !== "boolean") {
-          errors.push(`Field '${field.displayName}' must be a boolean`)
-        }
-        break
-
-      case "date":
-      case "datetime":
-        if (!this.isValidDate(value)) {
-          errors.push(`Field '${field.displayName}' must be a valid date`)
-        }
-        break
-
-      case "email":
-        if (typeof value === "string" && !this.isValidEmail(value)) {
-          errors.push(`Field '${field.displayName}' must be a valid email`)
-        }
-        break
-
-      case "url":
-        if (typeof value === "string" && !this.isValidUrl(value)) {
-          errors.push(`Field '${field.displayName}' must be a valid URL`)
-        }
-        break
-
-      case "enum":
-        if (validation.enum && !validation.enum.includes(value)) {
-          errors.push(`Field '${field.displayName}' must be one of: ${validation.enum.join(", ")}`)
-        }
-        break
-
-      case "array":
-        if (!Array.isArray(value)) {
-          errors.push(`Field '${field.displayName}' must be an array`)
-        }
-        break
-    }
-
-    return errors
-  }
-
-  /**
-   * Check if value is a valid date
-   */
-  private isValidDate(value: any): boolean {
-    const date = new Date(value)
-    return date instanceof Date && !isNaN(date.getTime())
-  }
-
-  /**
-   * Check if value is a valid email
-   */
-  private isValidEmail(email: string): boolean {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    return emailRegex.test(email)
-  }
-
-  /**
-   * Check if value is a valid URL
-   */
-  private isValidUrl(url: string): boolean {
-    try {
-      new URL(url)
-      return true
-    } catch {
-      return false
-    }
+    return Math.abs(hash).toString(16)
   }
 }
 
 // Export singleton instance
-export const contentTypeService = new ContentTypeService()
+export const contentTypeService = new ContentTypeService(new PrismaClient())
