@@ -600,6 +600,13 @@ model Translation {
   key       String
   value     String @db.Text
   
+  // Additional translation fields
+  description String?
+  isPlural    Boolean? @default(false)
+  pluralForms Json?    // Store as JSON for flexibility
+  variables   Json?    // Store as JSON array
+  metadata    Json?    // Store as JSON object
+  
   // Multi-tenant
   tenantId String? @db.Uuid
   tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -613,6 +620,26 @@ model Translation {
   @@index([locale])
   @@index([namespace])
   @@index([tenantId])
+}
+
+model TranslationMemory {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  sourceText  String
+  targetText  String
+  sourceLocale String
+  targetLocale String
+  similarity  Float    @default(1.0)
+  context     String?
+  metadata    Json?
+  
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("translation_memory")
+  @@index([sourceLocale, targetLocale])
+  @@index([sourceText])
+  @@index([similarity])
 }
 
 // =============================================================================

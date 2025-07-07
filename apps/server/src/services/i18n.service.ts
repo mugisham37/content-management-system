@@ -3,10 +3,12 @@ import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
 import { auditService } from "./audit.service"
+import { prisma } from "@cms-platform/database"
 import fs from "fs/promises"
+import { watch, FSWatcher } from "fs"
 import path from "path"
 import { EventEmitter } from "events"
-import yaml from "js-yaml"
+import * as yaml from "js-yaml"
 
 export interface I18nServiceOptions {
   defaultLocale?: string
@@ -117,13 +119,13 @@ export class I18nService extends EventEmitter {
   private options: I18nServiceOptions
   private translationCache: Map<string, Map<string, string>> = new Map()
   private pluralRules: Map<string, PluralRule> = new Map()
-  private watchers: Map<string, fs.FSWatcher> = new Map()
+  private watchers: Map<string, FSWatcher> = new Map()
   private loadedNamespaces: Set<string> = new Set()
   private translationMemory: Map<string, TranslationMemoryEntry[]> = new Map()
 
   constructor(options: I18nServiceOptions = {}) {
     super()
-    this.translationRepo = new TranslationRepository()
+    this.translationRepo = new TranslationRepository(prisma)
     this.options = {
       defaultLocale: "en",
       fallbackLocale: "en",
@@ -262,22 +264,20 @@ export class I18nService extends EventEmitter {
    */
   private async setupFileWatchers(): Promise<void> {
     try {
-      await fs.mkdir(this.options.localesDir!, { recursive: true })
+      const localesDir = this.options.localesDir || path.join(process.cwd(), "locales")
+      await fs.mkdir(localesDir, { recursive: true })
 
-      const watcherPromise = new Promise<void>((resolve, reject) => {
-        const watcher = fs.watch(this.options.localesDir!, { recursive: true })
-
-        watcher.on("change", async (eventType, filename) => {
-          if (eventType === "change" && filename?.endsWith(".json")) {
-            await this.reloadTranslationsFromFile(filename)
+      const watcher = watch(localesDir, { recursive: true }, 
+        (eventType: string, filename: string | null) => {
+          if (filename && filename.endsWith(".json")) {
+            this.reloadTranslationsFromFile(filename).catch(error => {
+              logger.error("Failed to reload translations from file:", error)
+            })
           }
-        })
+        }
+      )
 
-        watcher.on("error", reject)
-        resolve()
-      })
-
-      await watcherPromise
+      this.watchers.set(localesDir, watcher)
     } catch (error) {
       logger.error("Failed to setup file watchers:", error)
     }
@@ -288,7 +288,8 @@ export class I18nService extends EventEmitter {
    */
   private async reloadTranslationsFromFile(filename: string): Promise<void> {
     try {
-      const filePath = path.join(this.options.localesDir!, filename)
+      const localesDir = this.options.localesDir || path.join(process.cwd(), "locales")
+      const filePath = path.join(localesDir, filename)
       const [locale, namespace] = path.basename(filename, ".json").split(".")
 
       const content = await fs.readFile(filePath, "utf-8")
@@ -824,7 +825,7 @@ export class I18nService extends EventEmitter {
       let translation = translations.get(key)
 
       // Try fallback locale if translation not found
-      if (!translation && locale !== this.options.fallbackLocale) {
+      if (!translation && locale !== this.options.fallbackLocale && this.options.fallbackLocale) {
         const fallbackTranslations = await this.loadTranslations(this.options.fallbackLocale!, namespace, tenantId)
         translation = fallbackTranslations.get(key)
       }
@@ -850,14 +851,15 @@ export class I18nService extends EventEmitter {
       }
 
       // Get full translation object for pluralization
-      let translationObj: Translation | null = null
+      let translationObj: any = null
       if (count !== undefined) {
         translationObj = await this.translationRepo.findByKey(key, locale, namespace, tenantId)
       }
 
       // Apply pluralization
       if (count !== undefined && translationObj?.pluralForms) {
-        translation = this.applyPluralization(translation, count, locale, translationObj.pluralForms)
+        const pluralForms = translationObj.pluralForms as Record<string, string>
+        translation = this.applyPluralization(translation, count, locale, pluralForms)
       }
 
       // Apply interpolation
@@ -955,7 +957,7 @@ export class I18nService extends EventEmitter {
 
       if (existing) {
         // Update existing translation
-        translation = await this.translationRepo.update(
+        const updated = await this.translationRepo.updateTranslation(
           existing.id,
           {
             value,
@@ -964,13 +966,21 @@ export class I18nService extends EventEmitter {
             pluralForms,
             variables,
             metadata,
-            updatedBy: userId,
           },
           tenantId,
         )
+        translation = {
+          ...updated,
+          description: updated.description || undefined,
+          isPlural: updated.isPlural || undefined,
+          pluralForms: updated.pluralForms as Record<string, string> | undefined,
+          variables: updated.variables as string[] | undefined,
+          metadata: updated.metadata as Record<string, any> | undefined,
+          tenantId: updated.tenantId || undefined,
+        }
       } else {
         // Create new translation
-        translation = await this.translationRepo.create({
+        const created = await this.translationRepo.create({
           key,
           value,
           locale,
@@ -981,9 +991,16 @@ export class I18nService extends EventEmitter {
           variables,
           metadata,
           tenantId,
-          createdBy: userId,
-          updatedBy: userId,
         })
+        translation = {
+          ...created,
+          description: created.description || undefined,
+          isPlural: created.isPlural || undefined,
+          pluralForms: created.pluralForms as Record<string, string> | undefined,
+          variables: created.variables as string[] | undefined,
+          metadata: created.metadata as Record<string, any> | undefined,
+          tenantId: created.tenantId || undefined,
+        }
       }
 
       // Update translation memory if enabled
@@ -1059,7 +1076,7 @@ export class I18nService extends EventEmitter {
         throw ApiError.notFound("Translation not found")
       }
 
-      await this.translationRepo.delete(translation.id, tenantId)
+      await this.translationRepo.deleteTranslation(translation.id, tenantId)
 
       // Clear cache
       await this.clearTranslationCache(locale, namespace, tenantId)
@@ -1373,7 +1390,14 @@ export class I18nService extends EventEmitter {
   async getStats(tenantId?: string): Promise<TranslationStats> {
     try {
       const stats = await this.translationRepo.getStats(tenantId)
-      return stats
+      return {
+        totalTranslations: stats.totalTranslations,
+        translationsByLocale: stats.translationsByLocale,
+        translationsByNamespace: stats.translationsByNamespace,
+        completionRate: stats.completionRate,
+        missingTranslations: stats.missingTranslations || [],
+        recentActivity: stats.recentActivity || [],
+      }
     } catch (error) {
       logger.error("Failed to get translation stats:", error)
       throw error
@@ -1573,7 +1597,7 @@ export class I18nService extends EventEmitter {
               locale: targetLocale,
               namespace,
               description: `Auto-translated from ${sourceLocale}`,
-              variables: sourceTranslation.variables,
+              variables: sourceTranslation.variables as string[] | undefined,
               metadata: {
                 autoTranslated: true,
                 sourceLocale,
@@ -2015,7 +2039,7 @@ export class I18nService extends EventEmitter {
             throw new Error(`API sync failed: ${response.statusText}`)
           }
 
-          translationsData = await response.json()
+          translationsData = await response.json() as Record<string, any>
           break
 
         case "database":
