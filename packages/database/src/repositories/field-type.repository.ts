@@ -83,6 +83,29 @@ export class FieldTypeRepository extends BaseRepository<FieldType, CreateFieldTy
   }
 
   /**
+   * Find all field types
+   */
+  async findAll(): Promise<FieldType[]> {
+    try {
+      return await this.model.findMany({
+        include: {
+          plugin: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              version: true,
+            },
+          },
+        },
+        orderBy: { name: 'asc' },
+      })
+    } catch (error) {
+      this.handleError(error, 'findAll')
+    }
+  }
+
+  /**
    * Find system field types
    */
   async findSystem(): Promise<FieldType[]> {

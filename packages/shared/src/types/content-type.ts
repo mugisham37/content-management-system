@@ -23,6 +23,8 @@ export interface FieldDefinition {
     enum?: string[];
     message?: string;
   };
+  validationRules?: ValidationRule[]; // Add this for backward compatibility
+  options?: Record<string, any>; // Add this property
   settings?: Record<string, any>;
   isSystem?: boolean;
   isLocalized?: boolean;
@@ -51,6 +53,8 @@ export interface CreateFieldDefinition {
     enum?: string[];
     message?: string;
   };
+  validationRules?: ValidationRule[]; // Add this for backward compatibility
+  options?: Record<string, any>; // Add this property
   settings?: Record<string, any>;
   isSystem?: boolean;
   isLocalized?: boolean;
@@ -59,7 +63,8 @@ export interface CreateFieldDefinition {
 
 // For updating existing fields
 export interface UpdateFieldDefinition extends Partial<CreateFieldDefinition> {
-  id: string;
+  id?: string;
+  name?: string; // Make name optional for updates
 }
 
 // Base ContentType interface

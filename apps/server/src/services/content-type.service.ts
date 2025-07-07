@@ -90,8 +90,8 @@ export class ContentTypeService {
       }
 
       // Check field count limit
-      if (data.fields && data.fields.length > this.options.maxFieldsPerType!) {
-        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+      if (data.fields && data.fields.length > (this.options.maxFieldsPerType ?? 100)) {
+        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType ?? 100} fields`)
       }
 
       // Check if content type with same name exists
@@ -185,7 +185,7 @@ export class ContentTypeService {
       // Cache result
       if (this.options.enableCache) {
         await cacheService.set(cacheKey, result, {
-          ttl: this.options.cacheTtl,
+          ttl: this.options.cacheTtl ?? 3600,
           namespace: tenantId,
         })
       }
@@ -227,7 +227,7 @@ export class ContentTypeService {
       // Cache result
       if (this.options.enableCache) {
         await cacheService.set(cacheKey, result, {
-          ttl: this.options.cacheTtl,
+          ttl: this.options.cacheTtl ?? 3600,
           namespace: tenantId,
         })
       }
@@ -296,7 +296,7 @@ export class ContentTypeService {
       // Cache result
       if (this.options.enableCache) {
         await cacheService.set(cacheKey, transformedResult, {
-          ttl: this.options.cacheTtl / 2, // Shorter TTL for lists
+          ttl: (this.options.cacheTtl ?? 3600) / 2, // Shorter TTL for lists
           namespace: tenantId,
         })
       }
@@ -334,11 +334,15 @@ export class ContentTypeService {
 
       // Validate field definitions if provided
       if (data.fields) {
-        await this.validateFieldDefinitions(data.fields)
+        // Filter and validate only CreateFieldDefinition types
+        const createFields = data.fields.filter((field): field is CreateFieldDefinition => 
+          typeof field.name === 'string'
+        )
+        await this.validateFieldDefinitions(createFields)
 
         // Check field count limit
-        if (data.fields.length > this.options.maxFieldsPerType!) {
-          throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+        if (data.fields.length > (this.options.maxFieldsPerType ?? 100)) {
+          throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType ?? 100} fields`)
         }
       }
 
@@ -350,7 +354,7 @@ export class ContentTypeService {
       if (data.fields !== undefined) {
         const existingFields = parseFieldsFromJson(existing.fields)
         const updatedFields = mergeFields(existingFields, data.fields)
-        updateData.fields = serializeFieldsToJson(updatedFields)
+        updateData.fields = serializeFieldsToJson(updatedFields) as any
       }
 
       // Update content type
@@ -476,8 +480,8 @@ export class ContentTypeService {
       }
 
       // Check field count limit
-      if (fields.length >= this.options.maxFieldsPerType!) {
-        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType} fields`)
+      if (fields.length >= (this.options.maxFieldsPerType ?? 100)) {
+        throw ApiError.validationError(`Content type cannot have more than ${this.options.maxFieldsPerType ?? 100} fields`)
       }
 
       // Add field to content type
@@ -492,7 +496,7 @@ export class ContentTypeService {
 
       const updatedFields = [...fields, newField]
       const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
-        fields: serializeFieldsToJson(updatedFields),
+        fields: serializeFieldsToJson(updatedFields) as any,
       })
 
       // Clear cache
@@ -579,7 +583,7 @@ export class ContentTypeService {
       }
 
       const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
-        fields: serializeFieldsToJson(fields),
+        fields: serializeFieldsToJson(fields) as any,
       })
 
       // Clear cache
@@ -637,7 +641,7 @@ export class ContentTypeService {
       // Remove field
       const updatedFields = fields.filter((f) => f.id !== fieldId)
       const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
-        fields: serializeFieldsToJson(updatedFields),
+        fields: serializeFieldsToJson(updatedFields) as any,
       })
 
       // Clear cache
@@ -694,7 +698,7 @@ export class ContentTypeService {
       // Cache result
       if (this.options.enableCache) {
         await cacheService.set(cacheKey, stats, {
-          ttl: this.options.cacheTtl / 4, // Shorter TTL for stats
+          ttl: (this.options.cacheTtl ?? 3600) / 4, // Shorter TTL for stats
           namespace: tenantId,
         })
       }
@@ -973,7 +977,11 @@ export class ContentTypeService {
         tenantId,
       })
 
-      return validation
+      return {
+        isValid: validation.isValid,
+        errors: validation.errors,
+        warnings: []
+      }
     } catch (error) {
       logger.error("Failed to validate content type:", error)
       throw error
@@ -997,14 +1005,20 @@ export class ContentTypeService {
 
       const fieldTypes = await this.fieldTypeRepo.findAll()
 
+      // Transform null to undefined for description field to match FieldType interface
+      const transformedFieldTypes = fieldTypes.map(ft => ({
+        ...ft,
+        description: ft.description ?? undefined
+      })) as FieldType[]
+
       // Cache result
       if (this.options.enableCache) {
-        await cacheService.set(cacheKey, fieldTypes, {
-          ttl: this.options.cacheTtl * 2, // Longer TTL for field types
+        await cacheService.set(cacheKey, transformedFieldTypes, {
+          ttl: (this.options.cacheTtl ?? 3600) * 2, // Longer TTL for field types
         })
       }
 
-      return fieldTypes
+      return transformedFieldTypes
     } catch (error) {
       logger.error("Failed to get available field types:", error)
       throw error
@@ -1048,7 +1062,7 @@ export class ContentTypeService {
       // Cache result
       if (this.options.enableCache) {
         await cacheService.set(cacheKey, transformedResults, {
-          ttl: this.options.cacheTtl / 4, // Shorter TTL for search results
+          ttl: (this.options.cacheTtl ?? 3600) / 4, // Shorter TTL for search results
           namespace: tenantId,
         })
       }
@@ -1093,7 +1107,7 @@ export class ContentTypeService {
       })
 
       const updatedContentType = await this.contentTypeRepo.update(contentTypeId, {
-        fields: serializeFieldsToJson(reorderedFields),
+        fields: serializeFieldsToJson(reorderedFields) as any,
       })
 
       // Clear cache

@@ -415,7 +415,14 @@ export class ContentTypeRepository extends BaseRepository<ContentType, ContentTy
   /**
    * Search content types
    */
-  async search(query: string, tenantId?: string): Promise<ContentType[]> {
+  async search(query: string, options: {
+    tenantId?: string;
+    limit?: number;
+    includeFields?: boolean;
+    searchInFields?: boolean;
+  } = {}): Promise<ContentType[]> {
+    const { tenantId, limit = 50, includeFields = false, searchInFields = false } = options;
+    
     const where: any = {
       OR: [
         { name: { contains: query, mode: 'insensitive' } },
@@ -428,7 +435,18 @@ export class ContentTypeRepository extends BaseRepository<ContentType, ContentTy
       where.tenantId = tenantId
     }
 
-    return this.findMany(where)
+    // If searchInFields is enabled, we could add field-based search here
+    // For now, we'll keep the basic implementation
+
+    return this.model.findMany({
+      where,
+      take: limit,
+      include: includeFields ? { 
+        tenant: true,
+        createdBy: true 
+      } : undefined,
+      orderBy: { updatedAt: 'desc' }
+    })
   }
 
   /**
