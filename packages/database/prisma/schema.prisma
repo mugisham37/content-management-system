@@ -261,6 +261,9 @@ model Content {
   locale String        @default("en")
   slug   String?
   
+  // Add missing currentVersion field
+  currentVersion String?
+  
   // Publishing
   publishedAt DateTime?
   publishedById String? @db.Uuid
@@ -305,10 +308,18 @@ model Content {
 
 model ContentVersion {
   id      String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  version Int
+  version String  // Changed from Int to String for semantic versioning
   data    Json   // Snapshot of content data at this version
   status  ContentVersionStatus @default(DRAFT)
   notes   String?
+  
+  // Add missing fields for enhanced versioning
+  type        VersionType @default(AUTO)  // New field
+  size        Int         @default(0)     // New field
+  tags        String[]    @default([])    // New field
+  metadata    Json        @default("{}")  // New field
+  checksum    String?                     // New field for integrity
+  scheduledFor DateTime?                  // New field for scheduling
   
   // Publishing information
   publishedAt DateTime?
@@ -323,6 +334,7 @@ model ContentVersion {
   createdById String? @db.Uuid
   createdBy   User?   @relation("VersionCreator", fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
   
   @@unique([contentId, version])
   @@map("content_versions")
@@ -330,6 +342,7 @@ model ContentVersion {
   @@index([status])
   @@index([version])
   @@index([createdAt])
+  @@index([size])
 }
 
 // =============================================================================
@@ -769,6 +782,14 @@ enum ContentVersionStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+  SCHEDULED
+}
+
+enum VersionType {
+  MAJOR
+  MINOR
+  PATCH
+  AUTO
 }
 
 enum MediaType {
@@ -1123,6 +1144,8 @@ model AuditLog {
   action      String
   resource    String
   resourceId  String?
+  entityType  String   // Add missing entityType field
+  entityId    String?  // Add entityId field (alias for resourceId)
   details     Json?
   ipAddress   String?
   userAgent   String?
@@ -1139,5 +1162,6 @@ model AuditLog {
   @@index([tenantId])
   @@index([action])
   @@index([resource])
+  @@index([entityType])
   @@index([createdAt])
 }

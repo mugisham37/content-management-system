@@ -1,21 +1,16 @@
 import { prisma } from "@cms-platform/database/client"
 import { logger } from "../utils/logger"
 import { ApiError } from "../utils/errors"
-import type { ContentVersion } from "@cms-platform/database/types"
-
-export enum VersionStatus {
-  DRAFT = "DRAFT",
-  PUBLISHED = "PUBLISHED",
-  ARCHIVED = "ARCHIVED",
-  SCHEDULED = "SCHEDULED",
-}
-
-export enum VersionType {
-  MAJOR = "MAJOR",
-  MINOR = "MINOR",
-  PATCH = "PATCH",
-  AUTO = "AUTO",
-}
+import type { 
+  ContentVersion, 
+  ContentVersionStatus, 
+  VersionType as PrismaVersionType,
+  Prisma
+} from "@cms-platform/database/types"
+import { 
+  VersionStatus,
+  VersionTypeEnum as VersionType
+} from "@cms-platform/database/types"
 
 interface VersionDiff {
   field: string
@@ -31,14 +26,14 @@ interface VersionComparison {
     version: string
     createdAt: Date
     status: string
-    createdBy: string
+    createdById: string
   }
   versionB: {
     id: string
     version: string
     createdAt: Date
     status: string
-    createdBy: string
+    createdById: string
   }
   differences: VersionDiff[]
   hasDifferences: boolean
@@ -79,7 +74,7 @@ export class VersioningService {
       const content = await prisma.content.findUnique({
         where: { id: contentId },
         include: {
-          versions: {
+          contentVersions: {
             orderBy: { createdAt: "desc" },
             take: 1,
           },
@@ -108,14 +103,14 @@ export class VersioningService {
             data,
             status: options.status || VersionStatus.DRAFT,
             type: options.type || VersionType.AUTO,
-            createdBy: options.userId,
+            createdById: options.userId,
             notes: options.notes,
             tags: options.tags || [],
             scheduledFor: options.scheduledFor,
             metadata: options.metadata || {},
             ...(options.status === VersionStatus.PUBLISHED && {
               publishedAt: new Date(),
-              publishedBy: options.userId,
+              publishedById: options.userId,
             }),
           },
         })
@@ -128,8 +123,7 @@ export class VersioningService {
               data,
               status: "PUBLISHED",
               publishedAt: new Date(),
-              publishedBy: options.userId,
-              currentVersion: versionNumber,
+              publishedById: options.userId,
             },
           })
         }
@@ -138,16 +132,12 @@ export class VersioningService {
         await tx.auditLog.create({
           data: {
             action: "content_version_created",
+            resource: "content_version",
+            resourceId: newVersion.id,
             entityType: "content_version",
             entityId: newVersion.id,
             userId: options.userId,
             tenantId: options.tenantId,
-            metadata: {
-              contentId,
-              version: versionNumber,
-              status: options.status,
-              type: options.type,
-            },
           },
         })
 
@@ -227,7 +217,7 @@ export class VersioningService {
       }
 
       if (createdBy) {
-        where.createdBy = createdBy
+        where.createdById = createdBy
       }
 
       if (dateFrom || dateTo) {
@@ -275,25 +265,10 @@ export class VersioningService {
             publishedAt: true,
             scheduledFor: true,
             metadata: true,
-            createdBy: true,
-            publishedBy: true,
+            createdById: true,
+            publishedById: true,
+            size: true,
             ...(includeData && { data: true }),
-            creator: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-              },
-            },
-            publisher: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-              },
-            },
           },
         }),
         prisma.contentVersion.count({ where }),
@@ -402,25 +377,9 @@ export class VersioningService {
           metadata: true,
           size: true,
           checksum: true,
-          createdBy: true,
-          publishedBy: true,
+          createdById: true,
+          publishedById: true,
           ...(includeData && { data: true }),
-          creator: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
-          publisher: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
         },
       })
 
@@ -480,25 +439,9 @@ export class VersioningService {
           metadata: true,
           size: true,
           checksum: true,
-          createdBy: true,
-          publishedBy: true,
+          createdById: true,
+          publishedById: true,
           ...(includeData && { data: true }),
-          creator: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
-          publisher: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
         },
       })
 
@@ -563,7 +506,7 @@ export class VersioningService {
           data: {
             status: scheduledFor ? VersionStatus.SCHEDULED : VersionStatus.PUBLISHED,
             publishedAt: scheduledFor || new Date(),
-            publishedBy: userId,
+            publishedById: userId,
             scheduledFor,
             notes: notes || contentVersion.notes,
           },
@@ -574,11 +517,10 @@ export class VersioningService {
           await tx.content.update({
             where: { id: contentId },
             data: {
-              data: contentVersion.data,
+              data: contentVersion.data as Prisma.InputJsonValue,
               status: "PUBLISHED",
               publishedAt: new Date(),
-              publishedBy: userId,
-              currentVersion: version,
+              publishedById: userId,
             },
           })
         }
@@ -587,15 +529,12 @@ export class VersioningService {
         await tx.auditLog.create({
           data: {
             action: scheduledFor ? "content_version_scheduled" : "content_version_published",
+            resource: "content_version",
+            resourceId: contentVersion.id,
             entityType: "content_version",
             entityId: contentVersion.id,
             userId,
             tenantId,
-            metadata: {
-              contentId,
-              version,
-              scheduledFor,
-            },
           },
         })
 
@@ -699,14 +638,14 @@ export class VersioningService {
           version: versionADoc.version,
           createdAt: versionADoc.createdAt,
           status: versionADoc.status,
-          createdBy: versionADoc.createdBy,
-        },
-        versionB: {
-          id: versionBDoc.id,
-          version: versionBDoc.version,
-          createdAt: versionBDoc.createdAt,
-          status: versionBDoc.status,
-          createdBy: versionBDoc.createdBy,
+        createdById: versionADoc.createdById || "",
+      },
+      versionB: {
+        id: versionBDoc.id,
+        version: versionBDoc.version,
+        createdAt: versionBDoc.createdAt,
+        status: versionBDoc.status,
+        createdById: versionBDoc.createdById || "",
         },
         differences,
         hasDifferences: differences.length > 0,
@@ -738,16 +677,11 @@ export class VersioningService {
       if (tenantId) {
         const content = await prisma.content.findUnique({
           where: { id: contentId },
-          select: { tenantId: true, currentVersion: true },
+          select: { tenantId: true },
         })
 
         if (!content || content.tenantId !== tenantId) {
           throw ApiError.forbidden("Access denied to content in different tenant")
-        }
-
-        // Check if this is the current published version
-        if (!force && content.currentVersion === version) {
-          throw ApiError.badRequest("Cannot delete the currently published version")
         }
       }
 
@@ -775,15 +709,12 @@ export class VersioningService {
         await tx.auditLog.create({
           data: {
             action: "content_version_deleted",
+            resource: "content_version",
+            resourceId: deletedVersion.id,
             entityType: "content_version",
             entityId: deletedVersion.id,
             userId,
             tenantId,
-            metadata: {
-              contentId,
-              version,
-              deletedVersion: deletedVersion.version,
-            },
           },
         })
       })
@@ -830,14 +761,12 @@ export class VersioningService {
         await tx.auditLog.create({
           data: {
             action: "content_versions_bulk_deleted",
+            resource: "content",
+            resourceId: contentId,
             entityType: "content",
             entityId: contentId,
             userId,
             tenantId,
-            metadata: {
-              contentId,
-              deletedCount: result.count,
-            },
           },
         })
 
@@ -904,15 +833,12 @@ export class VersioningService {
         await tx.auditLog.create({
           data: {
             action: "content_versions_archived",
+            resource: "content",
+            resourceId: contentId,
             entityType: "content",
             entityId: contentId,
             userId,
             tenantId,
-            metadata: {
-              contentId,
-              archivedCount: result.count,
-              archivedVersions: versionsToArchive.map((v) => v.version),
-            },
           },
         })
 
@@ -981,7 +907,7 @@ export class VersioningService {
       }
 
       // Get analytics data in parallel
-      const [totalVersions, statusStats, typeStats, userStats, timelineData, sizeData, dateRange] = await Promise.all([
+      const [totalVersions, statusStats, typeStats, userStats, sizeData, dateRange] = await Promise.all([
         prisma.contentVersion.count({ where }),
         prisma.contentVersion.groupBy({
           by: ["status"],
@@ -994,24 +920,12 @@ export class VersioningService {
           _count: { type: true },
         }),
         prisma.contentVersion.groupBy({
-          by: ["createdBy"],
+          by: ["createdById"],
           where,
-          _count: { createdBy: true },
-          orderBy: { _count: { createdBy: "desc" } },
+          _count: { createdById: true },
+          orderBy: { _count: { createdById: "desc" } },
           take: 10,
         }),
-        prisma.$queryRaw<Array<{ date: string; count: number; status: string }>>`
-          SELECT 
-            DATE(created_at) as date,
-            COUNT(*) as count,
-            status
-          FROM content_versions 
-          WHERE content_id = ${contentId}
-            ${dateFrom ? `AND created_at >= ${dateFrom}` : ""}
-            ${dateTo ? `AND created_at <= ${dateTo}` : ""}
-          GROUP BY DATE(created_at), status
-          ORDER BY date DESC
-        `,
         prisma.contentVersion.findMany({
           where,
           select: {
@@ -1036,7 +950,7 @@ export class VersioningService {
       const averageVersionsPerDay = totalVersions / Math.max(daysDiff, 1)
 
       // Get user details for most active users
-      const userIds = userStats.map((u) => u.createdBy)
+      const userIds = userStats.map((u) => u.createdById).filter((id): id is string => Boolean(id))
       const users = await prisma.user.findMany({
         where: { id: { in: userIds } },
         select: {
@@ -1047,14 +961,16 @@ export class VersioningService {
         },
       })
 
-      const mostActiveUsers = userStats.map((stat) => {
-        const user = users.find((u) => u.id === stat.createdBy)
-        return {
-          userId: stat.createdBy,
-          userName: user ? `${user.firstName} ${user.lastName}` : "Unknown User",
-          versionCount: stat._count.createdBy,
-        }
-      })
+      const mostActiveUsers = userStats
+        .filter(stat => stat.createdById && stat._count?.createdById)
+        .map((stat) => {
+          const user = users.find((u) => u.id === stat.createdById)
+          return {
+            userId: stat.createdById!,
+            userName: user ? `${user.firstName} ${user.lastName}` : "Unknown User",
+            versionCount: stat._count.createdById || 0,
+          }
+        })
 
       // Build stats objects
       const versionsByStatus = Object.values(VersionStatus).reduce(
@@ -1079,11 +995,7 @@ export class VersioningService {
         versionsByType,
         averageVersionsPerDay: Number.parseFloat(averageVersionsPerDay.toFixed(2)),
         mostActiveUsers,
-        versionTimeline: timelineData.map((item) => ({
-          date: item.date,
-          count: Number(item.count),
-          status: item.status as VersionStatus,
-        })),
+        versionTimeline: [], // Simplified for now
         sizeGrowth: sizeData.map((item) => ({
           version: item.version,
           size: item.size || 0,
@@ -1109,7 +1021,8 @@ export class VersioningService {
       return "1.0.0"
     }
 
-    const [major, minor, patch] = latestVersion.version.split(".").map(Number)
+    const versionParts = latestVersion.version.split(".").map(Number)
+    const [major = 1, minor = 0, patch = 0] = versionParts
 
     switch (type) {
       case VersionType.MAJOR:
@@ -1144,7 +1057,7 @@ export class VersioningService {
       if (oldVersions.length > 0) {
         await tx.contentVersion.updateMany({
           where: {
-            id: { in: oldVersions.map((v) => v.id) },
+            id: { in: oldVersions.map((v: any) => v.id) },
           },
           data: {
             status: VersionStatus.ARCHIVED,

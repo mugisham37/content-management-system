@@ -6,15 +6,63 @@
 export type {
   User,
   Content,
+  ContentVersion,
   Media,
   Tenant,
   ContentType,
+  AuditLog,
   UserRole,
   UserStatus,
   ContentStatus,
+  ContentVersionStatus,
+  VersionType,
   MediaType,
   Prisma,
 } from '@prisma/client'
+
+// Custom enum that matches your usage
+export enum VersionStatus {
+  DRAFT = 'DRAFT',
+  PUBLISHED = 'PUBLISHED',
+  ARCHIVED = 'ARCHIVED',
+  SCHEDULED = 'SCHEDULED'
+}
+
+export enum VersionTypeEnum {
+  MAJOR = 'MAJOR',
+  MINOR = 'MINOR',
+  PATCH = 'PATCH',
+  AUTO = 'AUTO'
+}
+
+// Custom interfaces
+export interface VersioningStats {
+  byStatus: Record<VersionStatus, number>;
+  byType: Record<VersionTypeEnum, number>;
+  totalSize: number;
+  latestVersion: string;
+}
+
+export interface DetailedVersioningStats {
+  totalVersions: number;
+  versionsByStatus: Record<VersionStatus, number>;
+  versionsByType: Record<VersionTypeEnum, number>;
+  averageVersionsPerDay: number;
+  mostActiveUsers: Array<{
+    userId: string;
+    userName: string;
+    versionCount: number;
+  }>;
+  versionTimeline: Array<{
+    date: Date;
+    count: number;
+  }>;
+  sizeGrowth: Array<{
+    version: string;
+    size: number;
+    date: Date;
+  }>;
+}
 
 // Export media types
 export * from './media.types'
