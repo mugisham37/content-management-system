@@ -102,8 +102,25 @@ export interface ComplianceReport {
   }
 }
 
+export interface AuditPattern {
+  id: string
+  name: string
+  description: string
+  conditions: {
+    actions?: string[]
+    categories?: string[]
+    severity?: string[]
+    timeWindow?: number // minutes
+    threshold?: number
+  }
+  alertLevel: "info" | "warning" | "critical"
+  enabled: boolean
+}
+
 export class AuditService {
   private auditLogs: Map<string, AuditLog> = new Map()
+  private patterns: Map<string, AuditPattern> = new Map()
+  private patternMatches: Map<string, Array<{ timestamp: Date; logId: string }>> = new Map()
   private indexedLogs: {
     byAction: Map<string, Set<string>>
     byEntityType: Map<string, Set<string>>
@@ -124,6 +141,7 @@ export class AuditService {
 
   constructor() {
     this.startCleanupTasks()
+    this.initializeDefaultPatterns()
   }
 
   /**
@@ -156,6 +174,9 @@ export class AuditService {
     expiresAt?: Date
   }): Promise<AuditLog> {
     try {
+      // Validate required fields
+      this.validateAuditData(data)
+
       const auditLog: AuditLog = {
         id: this.generateId(),
         action: data.action,
@@ -167,7 +188,11 @@ export class AuditService {
         tenantId: data.tenantId,
         details: data.details,
         changes: data.changes,
-        metadata: data.metadata,
+        metadata: {
+          ...data.metadata,
+          source: data.metadata?.source || "system",
+          tags: data.metadata?.tags || [],
+        },
         severity: data.severity || this.determineSeverity(data.action, data.category),
         category: data.category || this.determineCategory(data.action),
         timestamp: new Date(),
@@ -179,6 +204,9 @@ export class AuditService {
 
       // Update indexes
       this.updateIndexes(auditLog)
+
+      // Check for pattern matches
+      await this.checkPatternMatches(auditLog)
 
       // Emit event for real-time monitoring
       this.emitAuditEvent(auditLog)
@@ -230,6 +258,10 @@ export class AuditService {
         sortOrder = "desc",
       } = query
 
+      // Validate pagination parameters
+      const validatedPage = Math.max(1, page)
+      const validatedLimit = Math.min(Math.max(1, limit), 1000) // Max 1000 per page
+
       // Get candidate log IDs from indexes
       let candidateIds = new Set<string>(this.auditLogs.keys())
 
@@ -271,9 +303,9 @@ export class AuditService {
       }
 
       // Get actual logs and apply remaining filters
-      let filteredLogs = Array.from(candidateIds)
-        .map(id => this.auditLogs.get(id)!)
-        .filter(log => {
+      const filteredLogs = Array.from(candidateIds)
+        .map((id) => this.auditLogs.get(id)!)
+        .filter((log) => {
           // Entity ID filter
           if (entityId && log.entityId !== entityId) return false
 
@@ -291,19 +323,20 @@ export class AuditService {
               log.action,
               log.entityType,
               log.entityId,
-              log.userEmail,
-              log.userName,
-              JSON.stringify(log.details),
-              JSON.stringify(log.metadata),
-            ].join(" ").toLowerCase()
-
+              log.userEmail || "",
+              log.userName || "",
+              JSON.stringify(log.details || {}),
+              JSON.stringify(log.metadata || {}),
+            ]
+              .join(" ")
+              .toLowerCase()
             if (!searchableText.includes(searchLower)) return false
           }
 
           // Tags filter
           if (tags && tags.length > 0) {
             const logTags = log.metadata?.tags || []
-            if (!tags.some(tag => logTags.includes(tag))) return false
+            if (!tags.some((tag) => logTags.includes(tag))) return false
           }
 
           return true
@@ -328,15 +361,15 @@ export class AuditService {
 
       // Paginate
       const total = filteredLogs.length
-      const totalPages = Math.ceil(total / limit)
-      const startIndex = (page - 1) * limit
-      const paginatedLogs = filteredLogs.slice(startIndex, startIndex + limit)
+      const totalPages = Math.ceil(total / validatedLimit)
+      const startIndex = (validatedPage - 1) * validatedLimit
+      const paginatedLogs = filteredLogs.slice(startIndex, startIndex + validatedLimit)
 
       return {
         logs: paginatedLogs,
         total,
-        page,
-        limit,
+        page: validatedPage,
+        limit: validatedLimit,
         totalPages,
       }
     } catch (error) {
@@ -356,18 +389,24 @@ export class AuditService {
       limit?: number
       startDate?: Date
       endDate?: Date
-    } = {}
+    } = {},
   ): Promise<{
     logs: AuditLog[]
     total: number
     page: number
     limit: number
   }> {
-    return this.getAuditLogs({
+    const result = await this.getAuditLogs({
       entityType,
       entityId,
       ...options,
     })
+    return {
+      logs: result.logs,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    }
   }
 
   /**
@@ -380,17 +419,23 @@ export class AuditService {
       limit?: number
       startDate?: Date
       endDate?: Date
-    } = {}
+    } = {},
   ): Promise<{
     logs: AuditLog[]
     total: number
     page: number
     limit: number
   }> {
-    return this.getAuditLogs({
+    const result = await this.getAuditLogs({
       userId,
       ...options,
     })
+    return {
+      logs: result.logs,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    }
   }
 
   /**
@@ -398,10 +443,9 @@ export class AuditService {
    */
   async getRecentAuditLogs(limit = 20): Promise<AuditLog[]> {
     try {
+      const validatedLimit = Math.min(Math.max(1, limit), 100)
       const allLogs = Array.from(this.auditLogs.values())
-      return allLogs
-        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-        .slice(0, limit)
+      return allLogs.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, validatedLimit)
     } catch (error) {
       logger.error("Failed to get recent audit logs:", error)
       throw ApiError.internal("Failed to retrieve recent audit logs")
@@ -416,41 +460,38 @@ export class AuditService {
     timeRange?: {
       start: Date
       end: Date
-    }
+    },
   ): Promise<AuditStats> {
     try {
       let logs = Array.from(this.auditLogs.values())
 
       // Filter by tenant
       if (tenantId) {
-        logs = logs.filter(log => log.tenantId === tenantId)
+        logs = logs.filter((log) => log.tenantId === tenantId)
       }
 
       // Filter by time range
       if (timeRange) {
-        logs = logs.filter(log => 
-          log.timestamp >= timeRange.start && 
-          log.timestamp <= timeRange.end
-        )
+        logs = logs.filter((log) => log.timestamp >= timeRange.start && log.timestamp <= timeRange.end)
       }
 
       const totalLogs = logs.length
 
       // Group by action
       const logsByAction: Record<string, number> = {}
-      logs.forEach(log => {
+      logs.forEach((log) => {
         logsByAction[log.action] = (logsByAction[log.action] || 0) + 1
       })
 
       // Group by entity type
       const logsByEntityType: Record<string, number> = {}
-      logs.forEach(log => {
+      logs.forEach((log) => {
         logsByEntityType[log.entityType] = (logsByEntityType[log.entityType] || 0) + 1
       })
 
       // Group by user
       const logsByUser: Record<string, number> = {}
-      logs.forEach(log => {
+      logs.forEach((log) => {
         if (log.userId) {
           logsByUser[log.userId] = (logsByUser[log.userId] || 0) + 1
         }
@@ -458,20 +499,20 @@ export class AuditService {
 
       // Group by severity
       const logsBySeverity: Record<string, number> = {}
-      logs.forEach(log => {
+      logs.forEach((log) => {
         logsBySeverity[log.severity] = (logsBySeverity[log.severity] || 0) + 1
       })
 
       // Group by category
       const logsByCategory: Record<string, number> = {}
-      logs.forEach(log => {
+      logs.forEach((log) => {
         logsByCategory[log.category] = (logsByCategory[log.category] || 0) + 1
       })
 
       // Group by date
       const logsByDate: Record<string, number> = {}
-      logs.forEach(log => {
-        const date = log.timestamp.toISOString().split('T')[0]
+      logs.forEach((log) => {
+        const date = log.timestamp.toISOString().split("T")[0]
         logsByDate[date] = (logsByDate[date] || 0) + 1
       })
 
@@ -482,7 +523,7 @@ export class AuditService {
       // Top users
       const topUsers = Object.entries(logsByUser)
         .map(([userId, count]) => {
-          const userLog = logs.find(log => log.userId === userId)
+          const userLog = logs.find((log) => log.userId === userId)
           return {
             userId,
             userName: userLog?.userName,
@@ -493,9 +534,7 @@ export class AuditService {
         .slice(0, 10)
 
       // Recent activity
-      const recentActivity = logs
-        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-        .slice(0, 10)
+      const recentActivity = logs.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, 10)
 
       return {
         totalLogs,
@@ -517,41 +556,37 @@ export class AuditService {
   /**
    * Generate compliance report
    */
-  async generateComplianceReport(
-    startDate: Date,
-    endDate: Date,
-    tenantId?: string
-  ): Promise<ComplianceReport> {
+  async generateComplianceReport(startDate: Date, endDate: Date, tenantId?: string): Promise<ComplianceReport> {
     try {
       let logs = Array.from(this.auditLogs.values())
 
       // Filter by tenant
       if (tenantId) {
-        logs = logs.filter(log => log.tenantId === tenantId)
+        logs = logs.filter((log) => log.tenantId === tenantId)
       }
 
       // Filter by date range
-      logs = logs.filter(log => 
-        log.timestamp >= startDate && 
-        log.timestamp <= endDate
-      )
+      logs = logs.filter((log) => log.timestamp >= startDate && log.timestamp <= endDate)
 
       // Summary statistics
       const totalEvents = logs.length
-      const securityEvents = logs.filter(log => log.category === "security").length
-      const dataAccessEvents = logs.filter(log => log.category === "data").length
-      const authenticationEvents = logs.filter(log => log.category === "authentication").length
-      const authorizationEvents = logs.filter(log => log.category === "authorization").length
-      const systemEvents = logs.filter(log => log.category === "system").length
+      const securityEvents = logs.filter((log) => log.category === "security").length
+      const dataAccessEvents = logs.filter((log) => log.category === "data").length
+      const authenticationEvents = logs.filter((log) => log.category === "authentication").length
+      const authorizationEvents = logs.filter((log) => log.category === "authorization").length
+      const systemEvents = logs.filter((log) => log.category === "system").length
 
       // User activity analysis
-      const userActivityMap = new Map<string, {
-        loginCount: number
-        dataAccessCount: number
-        lastActivity: Date
-      }>()
+      const userActivityMap = new Map<
+        string,
+        {
+          loginCount: number
+          dataAccessCount: number
+          lastActivity: Date
+        }
+      >()
 
-      logs.forEach(log => {
+      logs.forEach((log) => {
         if (log.userId) {
           const existing = userActivityMap.get(log.userId) || {
             loginCount: 0,
@@ -574,7 +609,7 @@ export class AuditService {
       })
 
       const userActivity = Array.from(userActivityMap.entries()).map(([userId, activity]) => {
-        const userLog = logs.find(log => log.userId === userId)
+        const userLog = logs.find((log) => log.userId === userId)
         return {
           userId,
           userName: userLog?.userName,
@@ -583,30 +618,35 @@ export class AuditService {
       })
 
       // Data access analysis
-      const dataAccessMap = new Map<string, {
-        accessCount: number
-        users: Set<string>
-        lastAccess: Date
-      }>()
-
-      logs.filter(log => log.category === "data").forEach(log => {
-        const key = `${log.entityType}:${log.entityId}`
-        const existing = dataAccessMap.get(key) || {
-          accessCount: 0,
-          users: new Set(),
-          lastAccess: new Date(0),
+      const dataAccessMap = new Map<
+        string,
+        {
+          accessCount: number
+          users: Set<string>
+          lastAccess: Date
         }
+      >()
 
-        existing.accessCount++
-        if (log.userId) {
-          existing.users.add(log.userId)
-        }
-        if (log.timestamp > existing.lastAccess) {
-          existing.lastAccess = log.timestamp
-        }
+      logs
+        .filter((log) => log.category === "data")
+        .forEach((log) => {
+          const key = `${log.entityType}:${log.entityId}`
+          const existing = dataAccessMap.get(key) || {
+            accessCount: 0,
+            users: new Set(),
+            lastAccess: new Date(0),
+          }
 
-        dataAccessMap.set(key, existing)
-      })
+          existing.accessCount++
+          if (log.userId) {
+            existing.users.add(log.userId)
+          }
+          if (log.timestamp > existing.lastAccess) {
+            existing.lastAccess = log.timestamp
+          }
+
+          dataAccessMap.set(key, existing)
+        })
 
       const dataAccess = Array.from(dataAccessMap.entries()).map(([key, access]) => {
         const [entityType, entityId] = key.split(":")
@@ -620,34 +660,39 @@ export class AuditService {
       })
 
       // Security incidents analysis
-      const securityIncidentMap = new Map<string, {
-        count: number
-        severity: string
-        lastOccurrence: Date
-      }>()
-
-      logs.filter(log => log.category === "security").forEach(log => {
-        const existing = securityIncidentMap.get(log.action) || {
-          count: 0,
-          severity: log.severity,
-          lastOccurrence: new Date(0),
+      const securityIncidentMap = new Map<
+        string,
+        {
+          count: number
+          severity: string
+          lastOccurrence: Date
         }
+      >()
 
-        existing.count++
-        if (log.timestamp > existing.lastOccurrence) {
-          existing.lastOccurrence = log.timestamp
-          existing.severity = log.severity
-        }
+      logs
+        .filter((log) => log.category === "security")
+        .forEach((log) => {
+          const existing = securityIncidentMap.get(log.action) || {
+            count: 0,
+            severity: log.severity,
+            lastOccurrence: new Date(0),
+          }
 
-        securityIncidentMap.set(log.action, existing)
-      })
+          existing.count++
+          if (log.timestamp > existing.lastOccurrence) {
+            existing.lastOccurrence = log.timestamp
+            existing.severity = log.severity
+          }
+
+          securityIncidentMap.set(log.action, existing)
+        })
 
       const securityIncidents = Array.from(securityIncidentMap.entries()).map(([type, incident]) => ({
         type,
         ...incident,
       }))
 
-      // Compliance metrics (simplified calculations)
+      // Compliance metrics
       const complianceMetrics = {
         dataRetentionCompliance: this.calculateDataRetentionCompliance(logs),
         accessControlCompliance: this.calculateAccessControlCompliance(logs),
@@ -685,9 +730,10 @@ export class AuditService {
   async deleteOldAuditLogs(olderThan: Date): Promise<number> {
     try {
       let deletedCount = 0
+      const currentTime = new Date()
 
       for (const [id, log] of this.auditLogs) {
-        if (log.timestamp < olderThan || (log.expiresAt && log.expiresAt < new Date())) {
+        if (log.timestamp < olderThan || (log.expiresAt && log.expiresAt < currentTime)) {
           this.auditLogs.delete(id)
           this.removeFromIndexes(log)
           deletedCount++
@@ -705,10 +751,7 @@ export class AuditService {
   /**
    * Export audit logs
    */
-  async exportAuditLogs(
-    query: AuditQuery,
-    format: "json" | "csv" = "json"
-  ): Promise<string> {
+  async exportAuditLogs(query: AuditQuery, format: "json" | "csv" = "json"): Promise<string> {
     try {
       const { logs } = await this.getAuditLogs({ ...query, limit: 10000 })
 
@@ -723,36 +766,135 @@ export class AuditService {
     }
   }
 
-  // Private helper methods
+  /**
+   * Add audit pattern for monitoring
+   */
+  async addPattern(pattern: Omit<AuditPattern, "id">): Promise<AuditPattern> {
+    try {
+      const newPattern: AuditPattern = {
+        id: this.generateId(),
+        ...pattern,
+      }
 
+      this.patterns.set(newPattern.id, newPattern)
+      this.patternMatches.set(newPattern.id, [])
+
+      logger.info("Audit pattern added", { patternId: newPattern.id, name: newPattern.name })
+      return newPattern
+    } catch (error) {
+      logger.error("Failed to add audit pattern:", error)
+      throw ApiError.internal("Failed to add audit pattern")
+    }
+  }
+
+  /**
+   * Remove audit pattern
+   */
+  async removePattern(patternId: string): Promise<boolean> {
+    try {
+      const removed = this.patterns.delete(patternId)
+      this.patternMatches.delete(patternId)
+
+      if (removed) {
+        logger.info("Audit pattern removed", { patternId })
+      }
+
+      return removed
+    } catch (error) {
+      logger.error("Failed to remove audit pattern:", error)
+      throw ApiError.internal("Failed to remove audit pattern")
+    }
+  }
+
+  /**
+   * Get all audit patterns
+   */
+  async getPatterns(): Promise<AuditPattern[]> {
+    return Array.from(this.patterns.values())
+  }
+
+  /**
+   * Get audit log by ID
+   */
+  async getAuditLogById(id: string): Promise<AuditLog | null> {
+    return this.auditLogs.get(id) || null
+  }
+
+  /**
+   * Bulk log audit events
+   */
+  async bulkLog(logs: Array<Parameters<typeof this.log>[0]>): Promise<AuditLog[]> {
+    try {
+      const results: AuditLog[] = []
+
+      for (const logData of logs) {
+        const auditLog = await this.log(logData)
+        results.push(auditLog)
+      }
+
+      logger.info(`Bulk logged ${results.length} audit events`)
+      return results
+    } catch (error) {
+      logger.error("Failed to bulk log audit events:", error)
+      throw ApiError.internal("Failed to bulk log audit events")
+    }
+  }
+
+  // Private helper methods
   private generateId(): string {
     return `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
   }
 
+  private validateAuditData(data: any): void {
+    if (!data.action || typeof data.action !== "string") {
+      throw ApiError.badRequest("Action is required and must be a string")
+    }
+    if (!data.entityType || typeof data.entityType !== "string") {
+      throw ApiError.badRequest("Entity type is required and must be a string")
+    }
+    if (!data.entityId || typeof data.entityId !== "string") {
+      throw ApiError.badRequest("Entity ID is required and must be a string")
+    }
+  }
+
   private determineSeverity(action: string, category?: string): "low" | "medium" | "high" | "critical" {
-    if (category === "security" || action.includes("delete") || action.includes("admin")) {
+    const actionLower = action.toLowerCase()
+
+    if (category === "security" || actionLower.includes("breach") || actionLower.includes("attack")) {
+      return "critical"
+    }
+    if (actionLower.includes("delete") || actionLower.includes("admin") || actionLower.includes("privilege")) {
       return "high"
     }
-    if (action.includes("create") || action.includes("update")) {
+    if (actionLower.includes("create") || actionLower.includes("update") || actionLower.includes("modify")) {
       return "medium"
     }
     return "low"
   }
 
-  private determineCategory(action: string): "authentication" | "authorization" | "data" | "system" | "security" | "compliance" {
-    if (action.includes("login") || action.includes("logout") || action.includes("auth")) {
+  private determineCategory(
+    action: string,
+  ): "authentication" | "authorization" | "data" | "system" | "security" | "compliance" {
+    const actionLower = action.toLowerCase()
+
+    if (actionLower.includes("login") || actionLower.includes("logout") || actionLower.includes("auth")) {
       return "authentication"
     }
-    if (action.includes("permission") || action.includes("role") || action.includes("access")) {
+    if (actionLower.includes("permission") || actionLower.includes("role") || actionLower.includes("access")) {
       return "authorization"
     }
-    if (action.includes("create") || action.includes("read") || action.includes("update") || action.includes("delete")) {
+    if (
+      actionLower.includes("create") ||
+      actionLower.includes("read") ||
+      actionLower.includes("update") ||
+      actionLower.includes("delete")
+    ) {
       return "data"
     }
-    if (action.includes("security") || action.includes("breach") || action.includes("attack")) {
+    if (actionLower.includes("security") || actionLower.includes("breach") || actionLower.includes("attack")) {
       return "security"
     }
-    if (action.includes("compliance") || action.includes("audit")) {
+    if (actionLower.includes("compliance") || actionLower.includes("audit")) {
       return "compliance"
     }
     return "system"
@@ -806,7 +948,7 @@ export class AuditService {
     this.indexedLogs.bySeverity.get(log.severity)!.add(log.id)
 
     // Update date index
-    const dateKey = log.timestamp.toISOString().split('T')[0]
+    const dateKey = log.timestamp.toISOString().split("T")[0]
     if (!this.indexedLogs.byDate.has(dateKey)) {
       this.indexedLogs.byDate.set(dateKey, new Set())
     }
@@ -824,7 +966,7 @@ export class AuditService {
     }
     this.indexedLogs.byCategory.get(log.category)?.delete(log.id)
     this.indexedLogs.bySeverity.get(log.severity)?.delete(log.id)
-    const dateKey = log.timestamp.toISOString().split('T')[0]
+    const dateKey = log.timestamp.toISOString().split("T")[0]
     this.indexedLogs.byDate.get(dateKey)?.delete(log.id)
   }
 
@@ -859,41 +1001,165 @@ export class AuditService {
         userId: log.userId,
       })
     }
+
+    // Check for failed login attempts
+    if (log.action.includes("login") && log.action.includes("failed")) {
+      await this.checkFailedLoginPattern(log)
+    }
+  }
+
+  private async checkFailedLoginPattern(log: AuditLog): Promise<void> {
+    if (!log.userId) return
+
+    const recentLogs = Array.from(this.auditLogs.values()).filter(
+      (l) =>
+        l.userId === log.userId &&
+        l.action.includes("login") &&
+        l.action.includes("failed") &&
+        l.timestamp > new Date(Date.now() - 15 * 60 * 1000), // Last 15 minutes
+    )
+
+    if (recentLogs.length >= 5) {
+      logger.warn("Multiple failed login attempts detected", {
+        userId: log.userId,
+        attempts: recentLogs.length,
+        timeWindow: "15 minutes",
+      })
+    }
+  }
+
+  private async checkPatternMatches(log: AuditLog): Promise<void> {
+    for (const [patternId, pattern] of this.patterns) {
+      if (!pattern.enabled) continue
+
+      if (this.matchesPattern(log, pattern)) {
+        const matches = this.patternMatches.get(patternId) || []
+        matches.push({ timestamp: log.timestamp, logId: log.id })
+
+        // Clean old matches outside time window
+        if (pattern.conditions.timeWindow) {
+          const cutoff = new Date(Date.now() - pattern.conditions.timeWindow * 60 * 1000)
+          const recentMatches = matches.filter((m) => m.timestamp > cutoff)
+          this.patternMatches.set(patternId, recentMatches)
+
+          // Check threshold
+          if (pattern.conditions.threshold && recentMatches.length >= pattern.conditions.threshold) {
+            logger.warn("Audit pattern threshold exceeded", {
+              patternId,
+              patternName: pattern.name,
+              matches: recentMatches.length,
+              threshold: pattern.conditions.threshold,
+              alertLevel: pattern.alertLevel,
+            })
+          }
+        } else {
+          this.patternMatches.set(patternId, matches)
+        }
+      }
+    }
+  }
+
+  private matchesPattern(log: AuditLog, pattern: AuditPattern): boolean {
+    const { conditions } = pattern
+
+    if (conditions.actions && !conditions.actions.includes(log.action)) {
+      return false
+    }
+
+    if (conditions.categories && !conditions.categories.includes(log.category)) {
+      return false
+    }
+
+    if (conditions.severity && !conditions.severity.includes(log.severity)) {
+      return false
+    }
+
+    return true
+  }
+
+  private initializeDefaultPatterns(): void {
+    // Add some default security patterns
+    this.addPattern({
+      name: "Multiple Failed Logins",
+      description: "Detect multiple failed login attempts from the same user",
+      conditions: {
+        actions: ["user_login_failed"],
+        timeWindow: 15,
+        threshold: 5,
+      },
+      alertLevel: "warning",
+      enabled: true,
+    })
+
+    this.addPattern({
+      name: "Admin Actions",
+      description: "Monitor all administrative actions",
+      conditions: {
+        actions: ["admin_user_create", "admin_user_delete", "admin_role_change"],
+        severity: ["high", "critical"],
+      },
+      alertLevel: "info",
+      enabled: true,
+    })
+
+    this.addPattern({
+      name: "Security Events",
+      description: "Monitor all security-related events",
+      conditions: {
+        categories: ["security"],
+        severity: ["critical"],
+      },
+      alertLevel: "critical",
+      enabled: true,
+    })
   }
 
   private startCleanupTasks(): void {
     // Clean up expired logs every hour
-    setInterval(() => {
-      this.deleteOldAuditLogs(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000))
-    }, 60 * 60 * 1000)
+    setInterval(
+      () => {
+        this.deleteOldAuditLogs(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000))
+      },
+      60 * 60 * 1000,
+    )
+
+    // Clean up old pattern matches every 30 minutes
+    setInterval(
+      () => {
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000) // 24 hours
+        for (const [patternId, matches] of this.patternMatches) {
+          const recentMatches = matches.filter((m) => m.timestamp > cutoff)
+          this.patternMatches.set(patternId, recentMatches)
+        }
+      },
+      30 * 60 * 1000,
+    )
   }
 
   private calculateDataRetentionCompliance(logs: AuditLog[]): number {
     // Simplified calculation - percentage of logs with proper expiration dates
-    const logsWithExpiration = logs.filter(log => log.expiresAt).length
+    const logsWithExpiration = logs.filter((log) => log.expiresAt).length
     return logs.length > 0 ? (logsWithExpiration / logs.length) * 100 : 100
   }
 
   private calculateAccessControlCompliance(logs: AuditLog[]): number {
     // Simplified calculation - percentage of access events with proper authorization
-    const accessLogs = logs.filter(log => log.category === "authorization")
-    const successfulAccess = accessLogs.filter(log => !log.action.includes("denied")).length
+    const accessLogs = logs.filter((log) => log.category === "authorization")
+    const successfulAccess = accessLogs.filter((log) => !log.action.includes("denied")).length
     return accessLogs.length > 0 ? (successfulAccess / accessLogs.length) * 100 : 100
   }
 
   private calculateAuditTrailCompleteness(logs: AuditLog[]): number {
     // Simplified calculation - percentage of logs with complete metadata
-    const completeMetadata = logs.filter(log => 
-      log.metadata && 
-      log.metadata.ipAddress && 
-      log.metadata.userAgent
+    const completeMetadata = logs.filter(
+      (log) => log.metadata && log.metadata.ipAddress && log.metadata.userAgent,
     ).length
     return logs.length > 0 ? (completeMetadata / logs.length) * 100 : 100
   }
 
   private calculateSecurityEventCoverage(logs: AuditLog[]): number {
     // Simplified calculation - percentage of security events captured
-    const securityLogs = logs.filter(log => log.category === "security")
+    const securityLogs = logs.filter((log) => log.category === "security")
     const totalEvents = logs.length
     return totalEvents > 0 ? (securityLogs.length / totalEvents) * 100 : 100
   }
@@ -902,14 +1168,52 @@ export class AuditService {
     if (logs.length === 0) return ""
 
     const headers = [
-      "id", "timestamp", "action", "entityType", "entityId", 
-      "userId", "userEmail", "userName", "tenantId", "severity", 
-      "category", "details", "metadata"
+      "id",
+      "timestamp",
+      "action",
+      "entityType",
+      "entityId",
+      "userId",
+      "userEmail",
+      "userName",
+      "tenantId",
+      "severity",
+      "category",
+      "details",
+      "metadata",
     ]
 
     const csvRows = [headers.join(",")]
 
     for (const log of logs) {
       const row = [
-        log.id,
-        log.timestamp.
+        this.escapeCsvValue(log.id),
+        this.escapeCsvValue(log.timestamp.toISOString()),
+        this.escapeCsvValue(log.action),
+        this.escapeCsvValue(log.entityType),
+        this.escapeCsvValue(log.entityId),
+        this.escapeCsvValue(log.userId || ""),
+        this.escapeCsvValue(log.userEmail || ""),
+        this.escapeCsvValue(log.userName || ""),
+        this.escapeCsvValue(log.tenantId || ""),
+        this.escapeCsvValue(log.severity),
+        this.escapeCsvValue(log.category),
+        this.escapeCsvValue(JSON.stringify(log.details || {})),
+        this.escapeCsvValue(JSON.stringify(log.metadata || {})),
+      ]
+      csvRows.push(row.join(","))
+    }
+
+    return csvRows.join("\n")
+  }
+
+  private escapeCsvValue(value: string): string {
+    if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+      return `"${value.replace(/"/g, '""')}"`
+    }
+    return value
+  }
+}
+
+// Export singleton instance
+export const auditService = new AuditService()
