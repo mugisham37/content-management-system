@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -7,14 +7,13 @@
     "moduleResolution": "bundler",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": false,
     "outDir": "./dist",
     "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "types": ["node", "jest"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
@@ -25,16 +24,11 @@
       "@/services/*": ["./src/services/*"],
       "@/utils/*": ["./src/utils/*"],
       "@/types/*": ["./src/types/*"],
-      "@cms-platform/database": ["../../packages/database/src"],
-      "@cms-platform/database/*": ["../../packages/database/src/*"],
-      "@cms-platform/shared": ["../../packages/shared/src"],
-      "@cms-platform/shared/*": ["../../packages/shared/src/*"]
-    },
-    "types": ["node", "jest"],
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "composite": true
+      "@cms-platform/database": ["../../packages/database/dist"],
+      "@cms-platform/database/*": ["../../packages/database/dist/*"],
+      "@cms-platform/shared": ["../../packages/shared/dist"],
+      "@cms-platform/shared/*": ["../../packages/shared/dist/*"]
+    }
   },
   "include": [
     "src/**/*"
