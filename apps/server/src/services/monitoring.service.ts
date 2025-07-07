@@ -3,6 +3,7 @@ import { exec } from "child_process"
 import { promisify } from "util"
 import { prisma } from "@cms-platform/database/client"
 import { logger } from "../utils/logger"
+import { cacheService } from "./cache.service"
 
 const execAsync = promisify(exec)
 
@@ -505,13 +506,92 @@ export class MonitoringService {
   }
 
   /**
+   * Get Redis metrics using existing cache service
+   */
+  private async getRedisMetrics(): Promise<any> {
+    try {
+      // Use the existing cache service to get Redis-like metrics
+      const cacheStats = cacheService.getStats()
+      const cacheInfo = await cacheService.getInfo()
+      
+      return {
+        connected: true,
+        type: 'in-memory-cache',
+        stats: cacheStats,
+        info: cacheInfo,
+        performance: {
+          hitRate: cacheStats.hitRate,
+          memoryUsage: cacheStats.memoryUsage,
+          totalOperations: cacheStats.hits + cacheStats.misses + cacheStats.sets + cacheStats.deletes
+        }
+      }
+    } catch (error) {
+      logger.error('Error getting Redis metrics:', error)
+      return {
+        connected: false,
+        error: (error as Error).message
+      }
+    }
+  }
+
+  /**
+   * Get Elasticsearch metrics using existing service
+   */
+  private async getElasticsearchMetrics(): Promise<any> {
+    try {
+      // Import the elasticsearch service
+      const { healthCheck, getIndexStats } = await import('./elasticsearch.service')
+      
+      const health = await healthCheck()
+      
+      if (health.status === 'unhealthy') {
+        return {
+          connected: false,
+          error: health.error
+        }
+      }
+      
+      // Get stats for main indices
+      const indices = ['content', 'users', 'media']
+      const indexStats: Record<string, any> = {}
+      
+      for (const index of indices) {
+        try {
+          indexStats[index] = await getIndexStats(index)
+        } catch (error) {
+          indexStats[index] = { error: (error as Error).message }
+        }
+      }
+      
+      return {
+        connected: true,
+        cluster: health.cluster,
+        version: health.version,
+        indices: indexStats
+      }
+    } catch (error) {
+      logger.error('Error getting Elasticsearch metrics:', error)
+      return {
+        connected: false,
+        error: (error as Error).message
+      }
+    }
+  }
+
+  /**
    * Get Redis status (if available)
    */
   private async getRedisStatus(): Promise<any> {
     try {
-      // This would integrate with your Redis client
-      // For now, returning null to indicate Redis monitoring is not implemented
-      return null
+      // Use the cache service for Redis-like status
+      const cacheStats = cacheService.getStats()
+      return {
+        status: "connected",
+        type: "in-memory-cache",
+        hitRate: cacheStats.hitRate,
+        memoryUsage: cacheStats.memoryUsage,
+        size: cacheStats.size
+      }
     } catch (error) {
       logger.error("Error getting Redis status:", error)
       return {
@@ -526,9 +606,9 @@ export class MonitoringService {
    */
   private async getElasticsearchStatus(): Promise<any> {
     try {
-      // This would integrate with your Elasticsearch client
-      // For now, returning null to indicate Elasticsearch monitoring is not implemented
-      return null
+      // Import and use the elasticsearch service
+      const { healthCheck } = await import('./elasticsearch.service')
+      return await healthCheck()
     } catch (error) {
       logger.error("Error getting Elasticsearch status:", error)
       return {

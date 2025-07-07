@@ -50,6 +50,7 @@ model Tenant {
   workflows     Workflow[]
   routes        Route[]
   translations  Translation[]
+  auditLogs     AuditLog[]
   
   // Audit fields
   createdAt DateTime @default(now())
@@ -92,6 +93,9 @@ model User {
   // User preferences
   preferences Json @default("{}")
   
+  // Soft delete support
+  deletedAt DateTime?
+  
   // Multi-tenant relationship
   tenantId String? @db.Uuid
   tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -114,6 +118,9 @@ model User {
   createdVersions     ContentVersion[] @relation("VersionCreator")
   publishedVersions   ContentVersion[] @relation("VersionPublisher")
   
+  // Audit relations
+  auditLogs AuditLog[]
+  
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -127,6 +134,7 @@ model User {
   @@index([status])
   @@index([role])
   @@index([isActive])
+  @@index([deletedAt])
 }
 
 model Account {
@@ -411,6 +419,7 @@ model Workflow {
   contentTypes String[] @db.Uuid
   contentTypeRefs ContentType[]
   entries      WorkflowEntry[]
+  instances    WorkflowInstance[]
   
   // Multi-tenant
   tenantId String? @db.Uuid
@@ -839,6 +848,7 @@ model Job {
   priority        Int        @default(0)
   tags            String[]   @default([])
   runImmediately  Boolean    @default(false)
+  executionTime   Int?       // Execution time in milliseconds
 
   // Relations
   createdById String? @db.Uuid
@@ -848,11 +858,13 @@ model Job {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@map("jobs")
   @@index([name])
   @@index([status])
   @@index([nextRunAt])
   @@index([priority])
   @@index([tags])
+  @@index([executionTime])
 }
 
 enum JobStatus {
@@ -861,4 +873,61 @@ enum JobStatus {
   COMPLETED
   FAILED
   CANCELLED
+}
+
+// =============================================================================
+// WORKFLOW INSTANCE SYSTEM
+// =============================================================================
+
+model WorkflowInstance {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  workflowId  String   @db.Uuid
+  status      String
+  startedAt   DateTime?
+  completedAt DateTime?
+  data        Json?
+  error       String?
+  
+  // Relations
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("workflow_instances")
+  @@index([workflowId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([completedAt])
+}
+
+// =============================================================================
+// AUDIT LOG SYSTEM
+// =============================================================================
+
+model AuditLog {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String?  @db.Uuid
+  tenantId    String?  @db.Uuid
+  action      String
+  resource    String
+  resourceId  String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  
+  // Relations
+  user        User?    @relation(fields: [userId], references: [id])
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  
+  // Audit fields
+  createdAt   DateTime @default(now())
+  
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([tenantId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
 }

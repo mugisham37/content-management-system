@@ -127,6 +127,26 @@ export interface TransformFunction {
   parameters?: Record<string, any>
 }
 
+export interface TableSchemaInfo {
+  column_name: string
+  data_type: string
+  is_nullable: string
+  column_default: string | null
+}
+
+export interface SchemaBackupData {
+  schema: TableSchemaInfo[]
+}
+
+export interface BackupDataStructure {
+  [tableName: string]: any[] | SchemaBackupData
+}
+
+export interface RestoreTableData {
+  data?: any[]
+  schema?: TableSchemaInfo[]
+}
+
 export interface MigrationStats {
   totalMigrations: number
   successfulMigrations: number
@@ -1477,20 +1497,36 @@ export class MigrationService extends EventEmitter {
     }
   }
 
-  private async restoreTable(table: string, data: any[], backupType: string, tenantId?: string): Promise<void> {
+  private async restoreTable(
+    table: string, 
+    data: any[] | SchemaBackupData, 
+    backupType: string, 
+    tenantId?: string
+  ): Promise<void> {
     try {
+      // Validate and normalize data structure
+      const restoreData = this.validateAndNormalizeRestoreData(data, backupType, table)
+      
       if (backupType === "schema") {
         // Restore schema only
-        await this.restoreTableSchema(table, data.schema)
+        if (restoreData.schema) {
+          await this.restoreTableSchema(table, restoreData.schema)
+        } else {
+          throw new Error(`Schema data not found for table ${table}`)
+        }
       } else {
         // Clear existing data
         await this.prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE`)
 
         // Insert backup data in batches
-        const batchSize = this.options.batchSize!
-        for (let i = 0; i < data.length; i += batchSize) {
-          const batch = data.slice(i, i + batchSize)
-          await this.insertBatch(table, batch)
+        if (restoreData.data && restoreData.data.length > 0) {
+          const batchSize = this.options.batchSize!
+          for (let i = 0; i < restoreData.data.length; i += batchSize) {
+            const batch = restoreData.data.slice(i, i + batchSize)
+            await this.insertBatch(table, batch)
+          }
+        } else {
+          logger.warn(`No data to restore for table ${table}`)
         }
       }
     } catch (error) {
@@ -1499,10 +1535,80 @@ export class MigrationService extends EventEmitter {
     }
   }
 
-  private async restoreTableSchema(table: string, schema: any[]): Promise<void> {
-    // This would involve recreating table structure
-    // Implementation depends on your specific schema format
-    logger.info(`Restoring schema for table: ${table}`)
+  private validateAndNormalizeRestoreData(
+    data: any[] | SchemaBackupData, 
+    backupType: string, 
+    table: string
+  ): RestoreTableData {
+    try {
+      // Type guard to check if data is SchemaBackupData
+      const isSchemaBackupData = (obj: any): obj is SchemaBackupData => {
+        return obj && typeof obj === 'object' && Array.isArray(obj.schema)
+      }
+
+      // Type guard to check if data is array
+      const isDataArray = (obj: any): obj is any[] => {
+        return Array.isArray(obj)
+      }
+
+      if (backupType === "schema") {
+        if (isSchemaBackupData(data)) {
+          return { schema: data.schema }
+        } else if (isDataArray(data)) {
+          // Handle legacy format where schema might be stored directly as array
+          logger.warn(`Legacy schema format detected for table ${table}, attempting to normalize`)
+          return { schema: data as TableSchemaInfo[] }
+        } else {
+          throw new Error(`Invalid schema backup data format for table ${table}`)
+        }
+      } else {
+        // For data backups (full, incremental, data)
+        if (isDataArray(data)) {
+          return { data }
+        } else if (isSchemaBackupData(data)) {
+          throw new Error(`Schema backup data provided for data restore operation on table ${table}`)
+        } else {
+          throw new Error(`Invalid data backup format for table ${table}`)
+        }
+      }
+    } catch (error) {
+      logger.error(`Failed to validate and normalize restore data for table ${table}:`, error)
+      throw error
+    }
+  }
+
+  private async restoreTableSchema(table: string, schema: TableSchemaInfo[]): Promise<void> {
+    try {
+      // Validate schema structure
+      if (!Array.isArray(schema) || schema.length === 0) {
+        throw new Error(`Invalid or empty schema data for table ${table}`)
+      }
+
+      // Validate each schema column
+      for (const column of schema) {
+        if (!column.column_name || !column.data_type) {
+          throw new Error(`Invalid schema column data for table ${table}: missing column_name or data_type`)
+        }
+      }
+
+      // This would involve recreating table structure
+      // Implementation depends on your specific schema format
+      // For now, we'll log the schema restoration attempt
+      logger.info(`Restoring schema for table: ${table}`, {
+        columns: schema.length,
+        columnNames: schema.map(col => col.column_name)
+      })
+
+      // TODO: Implement actual schema restoration logic
+      // This might involve:
+      // 1. Dropping existing table (with backup)
+      // 2. Recreating table with new schema
+      // 3. Handling constraints, indexes, etc.
+      
+    } catch (error) {
+      logger.error(`Failed to restore schema for table ${table}:`, error)
+      throw error
+    }
   }
 
   private async insertBatch(table: string, batch: any[]): Promise<void> {
