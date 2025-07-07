@@ -296,7 +296,7 @@ export class FileService {
       generateVariants?: boolean
       enableCompression?: boolean
       enableWatermark?: boolean
-    } = {}
+    } = {},
   ): Promise<FileUploadResult> {
     try {
       const {
@@ -387,7 +387,7 @@ export class FileService {
       }
 
       // Cache the result
-      await cacheService.set(`file:${result.id}`, result, 3600)
+      await cacheService.set(`file:${result.id}`, result, { ttl: 3600 })
 
       // Audit log
       await auditService.log({
@@ -501,11 +501,11 @@ export class FileService {
    */
   private async getVideoDuration(filePath: string): Promise<number> {
     return new Promise((resolve, reject) => {
-      ffmpeg.ffprobe(filePath, (err, metadata) => {
+      ffmpeg.ffprobe(filePath, (err: Error | null, metadata?: ffmpeg.FfprobeData) => {
         if (err) {
           reject(err)
         } else {
-          resolve(metadata.format.duration || 0)
+          resolve(metadata?.format.duration || 0)
         }
       })
     })
@@ -516,17 +516,17 @@ export class FileService {
    */
   private async getVideoInfo(filePath: string): Promise<any> {
     return new Promise((resolve, reject) => {
-      ffmpeg.ffprobe(filePath, (err, metadata) => {
+      ffmpeg.ffprobe(filePath, (err: Error | null, metadata?: ffmpeg.FfprobeData) => {
         if (err) {
           reject(err)
         } else {
-          const videoStream = metadata.streams.find(s => s.codec_type === "video")
+          const videoStream = metadata?.streams.find((s) => s.codec_type === "video")
           resolve({
             width: videoStream?.width || 0,
             height: videoStream?.height || 0,
-            bitrate: parseInt(videoStream?.bit_rate || "0"),
+            bitrate: Number.parseInt(videoStream?.bit_rate || "0"),
             fps: this.parseFrameRate(videoStream?.r_frame_rate || "0"),
-            format: metadata.format.format_name,
+            format: metadata?.format.format_name,
           })
         }
       })
@@ -536,13 +536,14 @@ export class FileService {
   /**
    * Parse frame rate string
    */
-  private parseFrameRate(frameRate: string): number {
+  private parseFrameRate(frameRate: string | number): number {
     try {
-      if (frameRate.includes('/')) {
-        const [num, den] = frameRate.split('/').map(Number)
+      const frameRateStr = String(frameRate)
+      if (frameRateStr.includes("/")) {
+        const [num, den] = frameRateStr.split("/").map(Number)
         return den > 0 ? num / den : 0
       }
-      return parseFloat(frameRate) || 0
+      return Number.parseFloat(frameRateStr) || 0
     } catch {
       return 0
     }
@@ -553,17 +554,17 @@ export class FileService {
    */
   private async getAudioInfo(filePath: string): Promise<any> {
     return new Promise((resolve, reject) => {
-      ffmpeg.ffprobe(filePath, (err, metadata) => {
+      ffmpeg.ffprobe(filePath, (err: Error | null, metadata?: ffmpeg.FfprobeData) => {
         if (err) {
           reject(err)
         } else {
-          const audioStream = metadata.streams.find(s => s.codec_type === "audio")
+          const audioStream = metadata?.streams.find((s) => s.codec_type === "audio")
           resolve({
-            duration: metadata.format.duration || 0,
-            bitrate: parseInt(audioStream?.bit_rate || "0"),
-            sampleRate: parseInt(audioStream?.sample_rate || "0"),
+            duration: metadata?.format.duration || 0,
+            bitrate: Number.parseInt(audioStream?.bit_rate || "0"),
+            sampleRate: Number.parseInt(audioStream?.sample_rate || "0"),
             channels: audioStream?.channels || 0,
-            format: metadata.format.format_name,
+            format: metadata?.format.format_name,
           })
         }
       })
@@ -582,6 +583,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued thumbnail generation", { fileId: file.id, jobId: job.id })
   }
@@ -598,6 +600,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued image variant generation", { fileId: file.id, jobId: job.id })
   }
@@ -614,6 +617,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued video variant generation", { fileId: file.id, jobId: job.id })
   }
@@ -630,6 +634,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued compression job", { fileId: file.id, jobId: job.id })
   }
@@ -646,6 +651,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued watermark job", { fileId: file.id, jobId: job.id })
   }
@@ -662,6 +668,7 @@ export class FileService {
       progress: 0,
       createdAt: new Date(),
     }
+
     this.processingQueue.set(job.id, job)
     logger.debug("Queued virus scan job", { fileId: file.id, jobId: job.id })
   }
@@ -675,12 +682,11 @@ export class FileService {
     this.isProcessingQueue = true
 
     const processQueue = async () => {
-      const pendingJobs = Array.from(this.processingQueue.values()).filter(
-        job => job.status === "pending"
-      )
+      const pendingJobs = Array.from(this.processingQueue.values()).filter((job) => job.status === "pending")
 
-      for (const job of pendingJobs.slice(0, 3)) { // Process max 3 jobs concurrently
-        this.processJob(job).catch(error => {
+      for (const job of pendingJobs.slice(0, 3)) {
+        // Process max 3 jobs concurrently
+        this.processJob(job).catch((error) => {
           logger.error("Job processing error:", error)
         })
       }
@@ -758,11 +764,11 @@ export class FileService {
     for (let i = 0; i < this.options.thumbnailSizes.length; i++) {
       const size = this.options.thumbnailSizes[i]
       const thumbnailPath = path.join(thumbnailDir, `${filename}_${size.name}.jpg`)
-      
+
       await sharp(file.path)
         .resize(size.width, size.height, {
           fit: "cover",
-          position: "center"
+          position: "center",
         })
         .jpeg({ quality: 85 })
         .toFile(thumbnailPath)
@@ -773,7 +779,7 @@ export class FileService {
         height: size.height,
         path: thumbnailPath,
         url: this.getFileUrl(thumbnailPath),
-        format: "jpeg"
+        format: "jpeg",
       })
 
       job.progress = Math.round(((i + 1) / this.options.thumbnailSizes.length) * 100)
@@ -782,7 +788,7 @@ export class FileService {
     // Update file with thumbnails
     file.thumbnails = thumbnails
     this.fileDatabase.set(file.id, file)
-    await cacheService.set(`file:${file.id}`, file, 3600)
+    await cacheService.set(`file:${file.id}`, file, { ttl: 3600 })
   }
 
   /**
@@ -798,13 +804,13 @@ export class FileService {
         const variant = this.options.imageVariants[i]
         const ext = variant.format || path.extname(file.path).slice(1)
         const variantPath = path.join(variantDir, `${filename}_${variant.name}.${ext}`)
-        
+
         let pipeline = sharp(file.path)
-        
+
         if (variant.width || variant.height) {
           pipeline = pipeline.resize(variant.width, variant.height, {
             fit: "inside",
-            withoutEnlargement: true
+            withoutEnlargement: true,
           })
         }
 
@@ -825,7 +831,7 @@ export class FileService {
         }
 
         await pipeline.toFile(variantPath)
-        
+
         const stats = await fs.stat(variantPath)
         const metadata = await sharp(variantPath).metadata()
 
@@ -837,7 +843,7 @@ export class FileService {
           format: variant.format || ext,
           quality: variant.quality,
           width: metadata.width,
-          height: metadata.height
+          height: metadata.height,
         })
 
         job.progress = Math.round(((i + 1) / this.options.imageVariants.length) * 100)
@@ -846,11 +852,10 @@ export class FileService {
       for (let i = 0; i < this.options.videoVariants.length; i++) {
         const variant = this.options.videoVariants[i]
         const variantPath = path.join(variantDir, `${filename}_${variant.name}.${variant.format || "mp4"}`)
-        
-        await this.generateVideoVariant(file.path, variantPath, variant)
-        
-        const stats = await fs.stat(variantPath)
 
+        await this.generateVideoVariant(file.path, variantPath, variant)
+
+        const stats = await fs.stat(variantPath)
         variants.push({
           name: variant.name,
           path: variantPath,
@@ -859,7 +864,7 @@ export class FileService {
           format: variant.format || "mp4",
           width: variant.width,
           height: variant.height,
-          bitrate: parseInt(variant.bitrate?.replace('k', '') || '0')
+          bitrate: Number.parseInt(variant.bitrate?.replace("k", "") || "0"),
         })
 
         job.progress = Math.round(((i + 1) / this.options.videoVariants.length) * 100)
@@ -869,7 +874,7 @@ export class FileService {
     // Update file with variants
     file.variants = variants
     this.fileDatabase.set(file.id, file)
-    await cacheService.set(`file:${file.id}`, file, 3600)
+    await cacheService.set(`file:${file.id}`, file, { ttl: 3600 })
   }
 
   /**
@@ -878,13 +883,10 @@ export class FileService {
   private async generateVideoVariant(
     inputPath: string,
     outputPath: string,
-    variant: { width?: number; height?: number; bitrate?: string; format?: string }
+    variant: { width?: number; height?: number; bitrate?: string; format?: string },
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      let command = ffmpeg(inputPath)
-        .output(outputPath)
-        .videoCodec('libx264')
-        .audioCodec('aac')
+      let command = ffmpeg(inputPath).output(outputPath).videoCodec("libx264").audioCodec("aac")
 
       if (variant.width && variant.height) {
         command = command.size(`${variant.width}x${variant.height}`)
@@ -895,8 +897,8 @@ export class FileService {
       }
 
       command
-        .on('end', resolve)
-        .on('error', reject)
+        .on("end", () => resolve())
+        .on("error", reject)
         .run()
     })
   }
@@ -908,14 +910,9 @@ export class FileService {
     job.progress = 25
 
     if (this.isImageFile(file.mimeType)) {
-      const compressedPath = path.join(
-        path.dirname(file.path),
-        `compressed_${path.basename(file.path)}`
-      )
+      const compressedPath = path.join(path.dirname(file.path), `compressed_${path.basename(file.path)}`)
 
-      await sharp(file.path)
-        .jpeg({ quality: 70, progressive: true })
-        .toFile(compressedPath)
+      await sharp(file.path).jpeg({ quality: 70, progressive: true }).toFile(compressedPath)
 
       // Replace original with compressed version
       await fs.unlink(file.path)
@@ -937,7 +934,7 @@ export class FileService {
     }
 
     const { imagePath, position, opacity, margin } = this.options.watermarkConfig
-    
+
     job.progress = 25
 
     const watermarkBuffer = await fs.readFile(imagePath)
@@ -977,18 +974,17 @@ export class FileService {
 
     job.progress = 75
 
-    const watermarkedPath = path.join(
-      path.dirname(file.path),
-      `watermarked_${path.basename(file.path)}`
-    )
+    const watermarkedPath = path.join(path.dirname(file.path), `watermarked_${path.basename(file.path)}`)
 
     await image
-      .composite([{
-        input: watermarkBuffer,
-        left,
-        top,
-        blend: 'over'
-      }])
+      .composite([
+        {
+          input: watermarkBuffer,
+          left,
+          top,
+          blend: "over",
+        },
+      ])
       .toFile(watermarkedPath)
 
     // Replace original with watermarked version
@@ -1003,10 +999,10 @@ export class FileService {
    */
   private async scanForVirus(job: FileProcessingJob, file: FileUploadResult): Promise<void> {
     job.progress = 50
-    
+
     // Simulate virus scanning - in real implementation, you would use ClamAV or similar
-    await new Promise(resolve => setTimeout(resolve, 3000))
-    
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+
     // For demo purposes, assume all files are clean
     job.result = { clean: true, threats: [] }
     job.progress = 100
@@ -1029,11 +1025,11 @@ export class FileService {
   private getFileUrl(filePath: string): string {
     const relativePath = path.relative(this.options.uploadDir, filePath)
     const url = `${this.options.publicUrl}/${relativePath.replace(/\\/g, "/")}`
-    
+
     if (this.options.enableCdn && this.options.cdnUrl) {
       return `${this.options.cdnUrl}/${relativePath.replace(/\\/g, "/")}`
     }
-    
+
     return url
   }
 
@@ -1080,7 +1076,7 @@ export class FileService {
       if (tenantId && file.tenantId !== tenantId) return null
 
       // Cache the result
-      await cacheService.set(`file:${fileId}`, file, 3600)
+      await cacheService.set(`file:${fileId}`, file, { ttl: 3600 })
 
       return file
     } catch (error) {
@@ -1094,9 +1090,9 @@ export class FileService {
    */
   async updateFile(
     fileId: string,
-    updates: Partial<Pick<FileUploadResult, 'alt' | 'title' | 'description' | 'tags' | 'folder'>>,
+    updates: Partial<Pick<FileUploadResult, "alt" | "title" | "description" | "tags" | "folder">>,
     userId?: string,
-    tenantId?: string
+    tenantId?: string,
   ): Promise<FileUploadResult> {
     try {
       const file = await this.getFile(fileId, tenantId)
@@ -1109,7 +1105,7 @@ export class FileService {
       this.fileDatabase.set(fileId, updatedFile)
 
       // Update cache
-      await cacheService.set(`file:${fileId}`, updatedFile, 3600)
+      await cacheService.set(`file:${fileId}`, updatedFile, { ttl: 3600 })
 
       // Audit log
       await auditService.log({
@@ -1243,7 +1239,7 @@ export class FileService {
         page = 1,
         limit = 20,
         sortBy = "uploadedAt",
-        sortOrder = "desc"
+        sortOrder = "desc",
       } = options
 
       let files = Array.from(this.fileDatabase.values())
@@ -1251,45 +1247,44 @@ export class FileService {
       // Apply filters
       if (query) {
         const searchTerm = query.toLowerCase()
-        files = files.filter(file => 
-          file.originalName.toLowerCase().includes(searchTerm) ||
-          file.title?.toLowerCase().includes(searchTerm) ||
-          file.description?.toLowerCase().includes(searchTerm)
+        files = files.filter(
+          (file) =>
+            file.originalName.toLowerCase().includes(searchTerm) ||
+            file.title?.toLowerCase().includes(searchTerm) ||
+            file.description?.toLowerCase().includes(searchTerm),
         )
       }
 
       if (mimeType) {
-        files = files.filter(file => file.mimeType === mimeType)
+        files = files.filter((file) => file.mimeType === mimeType)
       }
 
       if (minSize !== undefined) {
-        files = files.filter(file => file.size >= minSize)
+        files = files.filter((file) => file.size >= minSize)
       }
 
       if (maxSize !== undefined) {
-        files = files.filter(file => file.size <= maxSize)
+        files = files.filter((file) => file.size <= maxSize)
       }
 
       if (uploadedBy) {
-        files = files.filter(file => file.uploadedBy === uploadedBy)
+        files = files.filter((file) => file.uploadedBy === uploadedBy)
       }
 
       if (dateFrom) {
-        files = files.filter(file => file.uploadedAt >= dateFrom)
+        files = files.filter((file) => file.uploadedAt >= dateFrom)
       }
 
       if (dateTo) {
-        files = files.filter(file => file.uploadedAt <= dateTo)
+        files = files.filter((file) => file.uploadedAt <= dateTo)
       }
 
       if (tags && tags.length > 0) {
-        files = files.filter(file => 
-          file.tags && tags.some(tag => file.tags!.includes(tag))
-        )
+        files = files.filter((file) => file.tags && tags.some((tag) => file.tags!.includes(tag)))
       }
 
       if (folder) {
-        files = files.filter(file => file.folder === folder)
+        files = files.filter((file) => file.folder === folder)
       }
 
       // Sort files
@@ -1331,9 +1326,9 @@ export class FileService {
   async getStats(tenantId?: string): Promise<FileStats> {
     try {
       let files = Array.from(this.fileDatabase.values())
-      
+
       if (tenantId) {
-        files = files.filter(file => file.tenantId === tenantId)
+        files = files.filter((file) => file.tenantId === tenantId)
       }
 
       const totalFiles = files.length
@@ -1342,8 +1337,8 @@ export class FileService {
       const filesByType: Record<string, number> = {}
       const sizeByType: Record<string, number> = {}
 
-      files.forEach(file => {
-        const type = file.mimeType.split('/')[0]
+      files.forEach((file) => {
+        const type = file.mimeType.split("/")[0]
         filesByType[type] = (filesByType[type] || 0) + 1
         sizeByType[type] = (sizeByType[type] || 0) + file.size
       })
@@ -1351,7 +1346,7 @@ export class FileService {
       const recentUploads = files
         .sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime())
         .slice(0, 10)
-        .map(file => ({
+        .map((file) => ({
           id: file.id,
           filename: file.originalName,
           size: file.size,
@@ -1362,7 +1357,7 @@ export class FileService {
       const largestFiles = files
         .sort((a, b) => b.size - a.size)
         .slice(0, 10)
-        .map(file => ({
+        .map((file) => ({
           id: file.id,
           filename: file.originalName,
           size: file.size,
@@ -1402,7 +1397,7 @@ export class FileService {
    * Get all processing jobs for a file
    */
   getFileJobs(fileId: string): FileProcessingJob[] {
-    return Array.from(this.processingQueue.values()).filter(job => job.fileId === fileId)
+    return Array.from(this.processingQueue.values()).filter((job) => job.fileId === fileId)
   }
 
   /**
@@ -1424,13 +1419,13 @@ export class FileService {
    */
   cleanupJobs(): void {
     const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000) // 24 hours ago
-    
+
     for (const [jobId, job] of this.processingQueue.entries()) {
       if (job.completedAt && job.completedAt < cutoffTime) {
         this.processingQueue.delete(jobId)
       }
     }
-    
+
     logger.debug("Cleaned up old processing jobs")
   }
 
@@ -1439,9 +1434,12 @@ export class FileService {
    */
   private startCleanupScheduler(): void {
     // Clean up jobs every hour
-    setInterval(() => {
-      this.cleanupJobs()
-    }, 60 * 60 * 1000)
+    setInterval(
+      () => {
+        this.cleanupJobs()
+      },
+      60 * 60 * 1000,
+    )
   }
 
   /**
@@ -1457,7 +1455,7 @@ export class FileService {
       format?: "jpeg" | "png" | "webp"
       progressive?: boolean
       stripMetadata?: boolean
-    } = {}
+    } = {},
   ): Promise<void> {
     try {
       let pipeline = sharp(inputPath)
@@ -1470,7 +1468,7 @@ export class FileService {
       }
 
       if (options.stripMetadata) {
-        pipeline = pipeline.removeMetadata()
+        pipeline = pipeline.withMetadata({})
       }
 
       switch (options.format) {
@@ -1503,7 +1501,11 @@ export class FileService {
   /**
    * Bulk delete files
    */
-  async bulkDeleteFiles(fileIds: string[], userId?: string, tenantId?: string): Promise<{
+  async bulkDeleteFiles(
+    fileIds: string[],
+    userId?: string,
+    tenantId?: string,
+  ): Promise<{
     deleted: string[]
     failed: Array<{ id: string; error: string }>
   }> {
@@ -1517,7 +1519,7 @@ export class FileService {
       } catch (error) {
         failed.push({
           id: fileId,
-          error: (error as Error).message
+          error: (error as Error).message,
         })
       }
     }
@@ -1525,7 +1527,7 @@ export class FileService {
     logger.info("Bulk delete completed", {
       deleted: deleted.length,
       failed: failed.length,
-      userId
+      userId,
     })
 
     return { deleted, failed }
@@ -1534,12 +1536,7 @@ export class FileService {
   /**
    * Move file to different folder
    */
-  async moveFile(
-    fileId: string,
-    newFolder: string,
-    userId?: string,
-    tenantId?: string
-  ): Promise<FileUploadResult> {
+  async moveFile(fileId: string, newFolder: string, userId?: string, tenantId?: string): Promise<FileUploadResult> {
     try {
       const file = await this.getFile(fileId, tenantId)
       if (!file) {
@@ -1550,7 +1547,7 @@ export class FileService {
       this.fileDatabase.set(fileId, updatedFile)
 
       // Update cache
-      await cacheService.set(`file:${fileId}`, updatedFile, 3600)
+      await cacheService.set(`file:${fileId}`, updatedFile, { ttl: 3600 })
 
       // Audit log
       await auditService.log({
@@ -1568,7 +1565,7 @@ export class FileService {
         fileId,
         oldFolder: file.folder,
         newFolder,
-        userId
+        userId,
       })
 
       return updatedFile
@@ -1588,7 +1585,7 @@ export class FileService {
       folder?: string
       userId?: string
       tenantId?: string
-    } = {}
+    } = {},
   ): Promise<FileUploadResult> {
     try {
       const originalFile = await this.getFile(fileId, options.tenantId)
@@ -1617,7 +1614,7 @@ export class FileService {
         uploadedBy: options.userId,
         folder: options.folder || originalFile.folder,
         thumbnails: [],
-        variants: []
+        variants: [],
       }
 
       // Store in database
@@ -1638,7 +1635,7 @@ export class FileService {
       }
 
       // Cache the result
-      await cacheService.set(`file:${newFile.id}`, newFile, 3600)
+      await cacheService.set(`file:${newFile.id}`, newFile, { ttl: 3600 })
 
       // Audit log
       await auditService.log({
@@ -1656,7 +1653,7 @@ export class FileService {
       logger.info("File copied successfully", {
         originalId: fileId,
         newId: newFile.id,
-        userId: options.userId
+        userId: options.userId,
       })
 
       return newFile
@@ -1669,11 +1666,7 @@ export class FileService {
   /**
    * Get file download URL with expiration
    */
-  async getDownloadUrl(
-    fileId: string,
-    expiresIn: number = 3600,
-    tenantId?: string
-  ): Promise<string> {
+  async getDownloadUrl(fileId: string, expiresIn = 3600, tenantId?: string): Promise<string> {
     try {
       const file = await this.getFile(fileId, tenantId)
       if (!file) {
@@ -1682,7 +1675,7 @@ export class FileService {
 
       // In a real implementation, you would generate a signed URL
       // For now, return the regular URL with a token
-      const token = Buffer.from(`${fileId}:${Date.now() + expiresIn * 1000}`).toString('base64')
+      const token = Buffer.from(`${fileId}:${Date.now() + expiresIn * 1000}`).toString("base64")
       return `${file.url}?token=${token}`
     } catch (error) {
       logger.error("Failed to generate download URL:", error)
@@ -1695,14 +1688,14 @@ export class FileService {
    */
   validateDownloadToken(token: string, fileId: string): boolean {
     try {
-      const decoded = Buffer.from(token, 'base64').toString('utf-8')
-      const [tokenFileId, expirationTime] = decoded.split(':')
-      
+      const decoded = Buffer.from(token, "base64").toString("utf-8")
+      const [tokenFileId, expirationTime] = decoded.split(":")
+
       if (tokenFileId !== fileId) {
         return false
       }
 
-      const expiration = parseInt(expirationTime)
+      const expiration = Number.parseInt(expirationTime)
       return Date.now() < expiration
     } catch {
       return false
@@ -1720,9 +1713,9 @@ export class FileService {
   }> {
     try {
       let files = Array.from(this.fileDatabase.values())
-      
+
       if (tenantId) {
-        files = files.filter(file => file.tenantId === tenantId)
+        files = files.filter((file) => file.tenantId === tenantId)
       }
 
       const totalFiles = files.length
@@ -1734,7 +1727,7 @@ export class FileService {
         totalFiles,
         totalSize,
         quota,
-        percentage
+        percentage,
       }
     } catch (error) {
       logger.error("Failed to get storage usage:", error)
@@ -1755,21 +1748,19 @@ export class FileService {
     try {
       // Get all files in upload directory
       const uploadDirs = ["images", "videos", "audio", "documents", "files"]
-      
+
       for (const dir of uploadDirs) {
         const dirPath = path.join(this.options.uploadDir, dir)
-        
+
         try {
           const files = await fs.readdir(dirPath)
-          
+
           for (const filename of files) {
             const filePath = path.join(dirPath, filename)
-            
+
             // Check if file exists in database
-            const fileExists = Array.from(this.fileDatabase.values()).some(
-              file => file.path === filePath
-            )
-            
+            const fileExists = Array.from(this.fileDatabase.values()).some((file) => file.path === filePath)
+
             if (!fileExists) {
               try {
                 await fs.unlink(filePath)
@@ -1786,7 +1777,7 @@ export class FileService {
       }
 
       logger.info("Orphaned file cleanup completed", { cleaned, errors: errors.length })
-      
+
       return { cleaned, errors }
     } catch (error) {
       logger.error("Orphaned file cleanup failed:", error)
