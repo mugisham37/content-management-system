@@ -5,189 +5,35 @@ import { cacheService } from "./cache.service"
 import { auditService } from "./audit.service"
 import { ApiError } from "../utils/errors"
 import crypto from "crypto"
+import {
+  NotificationType,
+  NotificationChannel,
+  NotificationStatus,
+  NotificationPriority,
+  INotification,
+  INotificationTemplate,
+  INotificationPreferences,
+  INotificationAnalytics,
+  INotificationResponse,
+  NotificationBatch,
+  NotificationRule,
+  NotificationAnalytics,
+  NotificationServiceOptions,
+} from "../types/notification.types"
 
-// Enhanced notification system for PostgreSQL
-export enum NotificationStatus {
-  UNREAD = "unread",
-  READ = "read",
-  ARCHIVED = "archived",
-  DELETED = "deleted",
-}
-
-export enum NotificationPriority {
-  LOW = "low",
-  MEDIUM = "medium",
-  HIGH = "high",
-  CRITICAL = "critical",
-  URGENT = "urgent",
-}
-
-export enum NotificationType {
-  SYSTEM = "system",
-  CONTENT = "content",
-  WORKFLOW = "workflow",
-  USER = "user",
-  MEDIA = "media",
-  SECURITY = "security",
-  BILLING = "billing",
-  MAINTENANCE = "maintenance",
-  WORKFLOW_ASSIGNMENT = "workflow_assignment",
-  WORKFLOW_APPROVAL = "workflow_approval",
-  WORKFLOW_NOTIFICATION = "workflow_notification",
-  CONTENT_PUBLISHED = "content_published",
-  CONTENT_UNPUBLISHED = "content_unpublished",
-  CONTENT_UPDATED = "content_updated",
-  CONTENT_DELETED = "content_deleted",
-  CONTENT_SCHEDULED = "content_scheduled",
-  USER_CREATED = "user_created",
-  USER_UPDATED = "user_updated",
-  USER_DELETED = "user_deleted",
-  USER_LOGIN = "user_login",
-  USER_LOGOUT = "user_logout",
-  MEDIA_UPLOADED = "media_uploaded",
-  MEDIA_UPDATED = "media_updated",
-  MEDIA_DELETED = "media_deleted",
-  API_KEY_CREATED = "api_key_created",
-  API_KEY_EXPIRED = "api_key_expired",
-  WEBHOOK_FAILED = "webhook_failed",
-  BACKUP_COMPLETED = "backup_completed",
-  BACKUP_FAILED = "backup_failed",
-  CUSTOM = "custom",
-}
-
-export enum NotificationChannel {
-  IN_APP = "in_app",
-  EMAIL = "email",
-  SMS = "sms",
-  PUSH = "push",
-  WEBHOOK = "webhook",
-  SLACK = "slack",
-  DISCORD = "discord",
-}
-
-export interface NotificationTemplate {
-  id: string
-  name: string
-  type: NotificationType
-  channels: NotificationChannel[]
-  subject: string
-  content: string
-  htmlContent?: string
-  variables: string[]
-  isActive: boolean
-  conditions?: Record<string, any>
-  tenantId?: string
-}
-
-export interface NotificationPreferences {
-  userId: string
-  channels: Record<NotificationType, NotificationChannel[]>
-  quietHours?: {
-    start: string
-    end: string
-    timezone: string
-  }
-  frequency: "immediate" | "hourly" | "daily" | "weekly"
-  categories: Record<string, boolean>
-  tenantId?: string
-}
-
-export interface NotificationRule {
-  id: string
-  name: string
-  description?: string
-  conditions: Record<string, any>
-  actions: Array<{
-    type: "create_notification" | "send_email" | "trigger_webhook"
-    config: Record<string, any>
-  }>
-  isActive: boolean
-  priority: number
-  tenantId?: string
-}
-
-export interface NotificationBatch {
-  id: string
-  notifications: INotification[]
-  status: "pending" | "processing" | "completed" | "failed"
-  scheduledAt: Date
-  processedAt?: Date
-  errors?: string[]
-}
-
-export interface NotificationAnalytics {
-  totalSent: number
-  totalRead: number
-  totalUnread: number
-  readRate: number
-  channelDistribution: Record<NotificationChannel, number>
-  typeDistribution: Record<NotificationType, number>
-  priorityDistribution: Record<NotificationPriority, number>
-  timeSeriesData: Array<{
-    date: string
-    sent: number
-    read: number
-    clicked: number
-  }>
-  topUsers: Array<{
-    userId: string
-    count: number
-    readRate: number
-  }>
-}
-
-export interface INotification {
-  id: string
-  userId: string
-  type: NotificationType
-  title: string
-  message: string
-  status: NotificationStatus
-  priority: NotificationPriority
-  channels: NotificationChannel[]
-  data?: Record<string, any>
-  metadata?: Record<string, any>
-  expiresAt?: Date
-  scheduledAt?: Date
-  sentAt?: Date
-  readAt?: Date
-  archivedAt?: Date
-  clickedAt?: Date
-  actionUrl?: string
-  imageUrl?: string
-  tenantId?: string
-  createdAt: Date
-  updatedAt: Date
-  templateId?: string
-  batchId?: string
-  parentId?: string
-  relatedEntityType?: string
-  relatedEntityId?: string
-}
-
-export interface NotificationServiceOptions {
-  enableCache?: boolean
-  cacheTtl?: number
-  enableAudit?: boolean
-  enableAnalytics?: boolean
-  enableBatching?: boolean
-  enableTemplates?: boolean
-  enableRules?: boolean
-  enableRealtime?: boolean
-  enableDigest?: boolean
-  batchSize?: number
-  batchTimeout?: number
-  maxRetries?: number
-  enableDeduplication?: boolean
-  enableRateLimiting?: boolean
-  enablePersonalization?: boolean
-}
+// Re-export for backward compatibility
+export {
+  NotificationType,
+  NotificationChannel,
+  NotificationStatus,
+  NotificationPriority,
+} from "../types/notification.types"
 
 export class NotificationService extends EventEmitter {
   private options: NotificationServiceOptions
-  private templates: Map<string, NotificationTemplate> = new Map()
+  private templates: Map<string, INotificationTemplate> = new Map()
   private rules: Map<string, NotificationRule> = new Map()
-  private preferences: Map<string, NotificationPreferences> = new Map()
+  private preferences: Map<string, INotificationPreferences> = new Map()
   private batchQueue: Map<string, NotificationBatch> = new Map()
   private rateLimiters: Map<string, any> = new Map()
   private realtimeConnections: Map<string, any> = new Map()
@@ -227,17 +73,19 @@ export class NotificationService extends EventEmitter {
   private async initializeDefaultTemplates(): Promise<void> {
     if (!this.options.enableTemplates) return
 
-    const defaultTemplates: NotificationTemplate[] = [
+    const defaultTemplates: INotificationTemplate[] = [
       {
         id: "content-published",
         name: "Content Published",
         type: NotificationType.CONTENT_PUBLISHED,
         channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
         subject: "Content Published: {{title}}",
-        content: "Your content '{{title}}' has been published successfully.",
+        body: "Your content '{{title}}' has been published successfully.",
         htmlContent: "<p>Your content '<strong>{{title}}</strong>' has been published successfully.</p>",
         variables: ["title", "contentType", "publishedBy", "publishedAt"],
         isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       },
       {
         id: "workflow-assignment",
@@ -245,10 +93,12 @@ export class NotificationService extends EventEmitter {
         type: NotificationType.WORKFLOW_ASSIGNMENT,
         channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
         subject: "New Task Assigned: {{workflowName}}",
-        content: "You have been assigned a new task in workflow '{{workflowName}}'.",
+        body: "You have been assigned a new task in workflow '{{workflowName}}'.",
         htmlContent: "<p>You have been assigned a new task in workflow '<strong>{{workflowName}}</strong>'.</p>",
         variables: ["workflowName", "stepName", "assignedBy", "dueDate"],
         isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       },
       {
         id: "user-welcome",
@@ -256,10 +106,12 @@ export class NotificationService extends EventEmitter {
         type: NotificationType.USER_CREATED,
         channels: [NotificationChannel.EMAIL],
         subject: "Welcome to {{platformName}}!",
-        content: "Welcome {{firstName}}! Your account has been created successfully.",
+        body: "Welcome {{firstName}}! Your account has been created successfully.",
         htmlContent: "<h2>Welcome {{firstName}}!</h2><p>Your account has been created successfully.</p>",
         variables: ["firstName", "lastName", "email", "platformName"],
         isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       },
       {
         id: "security-alert",
@@ -267,10 +119,12 @@ export class NotificationService extends EventEmitter {
         type: NotificationType.SECURITY,
         channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
         subject: "Security Alert: {{alertType}}",
-        content: "Security alert: {{message}}",
+        body: "Security alert: {{message}}",
         htmlContent: "<div style='color: red;'><strong>Security Alert:</strong> {{message}}</div>",
         variables: ["alertType", "message", "timestamp", "ipAddress"],
         isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       },
     ]
 
@@ -453,9 +307,9 @@ export class NotificationService extends EventEmitter {
 
         if (templateId) {
           const template = this.templates.get(templateId)
-          if (template) {
+          if (template && template.subject) {
             finalTitle = this.processTemplate(template.subject, data)
-            finalMessage = this.processTemplate(template.content, data)
+            finalMessage = this.processTemplate(template.body, data)
             finalHtmlContent = template.htmlContent ? this.processTemplate(template.htmlContent, data) : undefined
           }
         }
@@ -675,18 +529,14 @@ export class NotificationService extends EventEmitter {
         }),
       ])
 
-      const result = {
+      const result: INotificationResponse = {
         notifications: notifications as INotification[],
         total,
         unreadCount,
         page,
         limit,
         pages: Math.ceil(total / limit),
-      }
-
-      // Add aggregations if analytics enabled
-      if (this.options.enableAnalytics) {
-        result.aggregations = await this.getNotificationAggregations(userId, where)
+        aggregations: this.options.enableAnalytics ? await this.getNotificationAggregations(userId, where) : undefined,
       }
 
       // Cache result
@@ -914,13 +764,15 @@ export class NotificationService extends EventEmitter {
    * Create or update notification template
    */
   public async upsertTemplate(
-    template: Omit<NotificationTemplate, "id"> & { id?: string },
-  ): Promise<NotificationTemplate> {
+    template: Omit<INotificationTemplate, "id" | "createdAt" | "updatedAt"> & { id?: string },
+  ): Promise<INotificationTemplate> {
     try {
       const templateId = template.id || this.generateId()
-      const fullTemplate: NotificationTemplate = {
+      const fullTemplate: INotificationTemplate = {
         ...template,
         id: templateId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       }
 
       this.templates.set(templateId, fullTemplate)
@@ -933,7 +785,7 @@ export class NotificationService extends EventEmitter {
           type: template.type,
           channels: template.channels,
           subject: template.subject,
-          content: template.content,
+          body: template.body,
           htmlContent: template.htmlContent,
           variables: template.variables,
           isActive: template.isActive,
@@ -947,7 +799,7 @@ export class NotificationService extends EventEmitter {
           type: template.type,
           channels: template.channels,
           subject: template.subject,
-          content: template.content,
+          body: template.body,
           htmlContent: template.htmlContent,
           variables: template.variables,
           isActive: template.isActive,
@@ -969,36 +821,47 @@ export class NotificationService extends EventEmitter {
    */
   public async setUserPreferences(
     userId: string,
-    preferences: Partial<NotificationPreferences>,
+    preferences: Partial<INotificationPreferences>,
     tenantId?: string,
-  ): Promise<NotificationPreferences> {
+  ): Promise<INotificationPreferences> {
     try {
       const existingPrefs = this.preferences.get(userId) || {
+        id: this.generateId(),
         userId,
         channels: this.getDefaultChannelPreferences(),
         frequency: "immediate" as const,
         categories: {},
+        enabled: true,
         tenantId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       }
 
-      const updatedPrefs: NotificationPreferences = {
+      const updatedPrefs: INotificationPreferences = {
         ...existingPrefs,
         ...preferences,
         userId,
         tenantId,
+        updatedAt: new Date(),
       }
 
       this.preferences.set(userId, updatedPrefs)
 
       // Store in database
       await prisma.notificationPreferences.upsert({
-        where: { userId },
+        where: { 
+          userId_tenantId: {
+            userId,
+            tenantId: tenantId || null,
+          }
+        },
         update: {
           channels: updatedPrefs.channels,
           quietHours: updatedPrefs.quietHours,
           frequency: updatedPrefs.frequency,
           categories: updatedPrefs.categories,
-          tenantId: updatedPrefs.tenantId,
+          enabled: updatedPrefs.enabled,
+          tenantId: updatedPrefs.tenantId || null,
           updatedAt: new Date(),
         },
         create: {
@@ -1007,7 +870,8 @@ export class NotificationService extends EventEmitter {
           quietHours: updatedPrefs.quietHours,
           frequency: updatedPrefs.frequency,
           categories: updatedPrefs.categories,
-          tenantId: updatedPrefs.tenantId,
+          enabled: updatedPrefs.enabled,
+          tenantId: updatedPrefs.tenantId || null,
         },
       })
 
@@ -1027,13 +891,13 @@ export class NotificationService extends EventEmitter {
   /**
    * Get user notification preferences
    */
-  public async getUserPreferences(userId: string, tenantId?: string): Promise<NotificationPreferences> {
+  public async getUserPreferences(userId: string, tenantId?: string): Promise<INotificationPreferences> {
     try {
       const cacheKey = `user:preferences:${userId}`
 
       // Try cache first
       if (this.options.enableCache) {
-        const cached = await cacheService.get<NotificationPreferences>(cacheKey, tenantId)
+        const cached = await cacheService.get<INotificationPreferences>(cacheKey, tenantId)
         if (cached) {
           return cached
         }
@@ -1047,24 +911,37 @@ export class NotificationService extends EventEmitter {
 
       // Load from database
       const dbPrefs = await prisma.notificationPreferences.findUnique({
-        where: { userId },
+        where: { 
+          userId_tenantId: {
+            userId,
+            tenantId: tenantId || null,
+          }
+        },
       })
 
-      const preferences: NotificationPreferences = dbPrefs
+      const preferences: INotificationPreferences = dbPrefs
         ? {
+            id: dbPrefs.id,
             userId: dbPrefs.userId,
             channels: dbPrefs.channels as Record<NotificationType, NotificationChannel[]>,
             quietHours: dbPrefs.quietHours as any,
             frequency: dbPrefs.frequency as any,
             categories: dbPrefs.categories as Record<string, boolean>,
+            enabled: dbPrefs.enabled,
             tenantId: dbPrefs.tenantId || undefined,
+            createdAt: dbPrefs.createdAt,
+            updatedAt: dbPrefs.updatedAt,
           }
         : {
+            id: this.generateId(),
             userId,
             channels: this.getDefaultChannelPreferences(),
             frequency: "immediate",
             categories: {},
+            enabled: true,
             tenantId,
+            createdAt: new Date(),
+            updatedAt: new Date(),
           }
 
       // Cache result
@@ -1525,7 +1402,7 @@ export class NotificationService extends EventEmitter {
       logger.info("Batch processed successfully", { batchId: batch.id, count: batch.notifications.length })
     } catch (error) {
       batch.status = "failed"
-      batch.errors = [error.message]
+      batch.errors = [error instanceof Error ? error.message : String(error)]
       logger.error("Failed to process batch:", error)
     }
   }
@@ -1538,7 +1415,7 @@ export class NotificationService extends EventEmitter {
       })
 
       for (const userPrefs of digestUsers) {
-        await this.sendDigestNotification(userPrefs.userId, userPrefs.tenantId)
+        await this.sendDigestNotification(userPrefs.userId, userPrefs.tenantId || undefined)
       }
 
       logger.info("Digest notifications processed", { userCount: digestUsers.length })
@@ -1673,7 +1550,7 @@ export class NotificationService extends EventEmitter {
 
   private getDefaultChannelPreferences(): Record<NotificationType, NotificationChannel[]> {
     const defaultChannels = [NotificationChannel.IN_APP]
-    const preferences: Record<NotificationType, NotificationChannel[]> = {}
+    const preferences: Record<NotificationType, NotificationChannel[]> = {} as Record<NotificationType, NotificationChannel[]>
 
     for (const type of Object.values(NotificationType)) {
       preferences[type] = [...defaultChannels]

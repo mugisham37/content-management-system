@@ -51,6 +51,10 @@ model Tenant {
   routes        Route[]
   translations  Translation[]
   auditLogs     AuditLog[]
+  notifications Notification[]
+  notificationTemplates NotificationTemplate[]
+  notificationPreferences NotificationPreferences[]
+  notificationAnalytics NotificationAnalytics[]
   
   // Audit fields
   createdAt DateTime @default(now())
@@ -72,6 +76,7 @@ model User {
   firstName String
   lastName  String
   avatar    String?
+  timezone  String?  @default("UTC")
   
   // Authentication
   password            String
@@ -117,6 +122,10 @@ model User {
   // Content version relations
   createdVersions     ContentVersion[] @relation("VersionCreator")
   publishedVersions   ContentVersion[] @relation("VersionPublisher")
+  
+  // Notification relations
+  notifications       Notification[]
+  notificationPreferences NotificationPreferences[]
   
   // Audit relations
   auditLogs AuditLog[]
@@ -876,6 +885,68 @@ enum JobStatus {
 }
 
 // =============================================================================
+// NOTIFICATION ENUMS
+// =============================================================================
+
+enum NotificationType {
+  SYSTEM
+  CONTENT
+  WORKFLOW
+  USER
+  MEDIA
+  SECURITY
+  BILLING
+  MAINTENANCE
+  WORKFLOW_ASSIGNMENT
+  WORKFLOW_APPROVAL
+  WORKFLOW_NOTIFICATION
+  CONTENT_PUBLISHED
+  CONTENT_UNPUBLISHED
+  CONTENT_UPDATED
+  CONTENT_DELETED
+  CONTENT_SCHEDULED
+  USER_CREATED
+  USER_UPDATED
+  USER_DELETED
+  USER_LOGIN
+  USER_LOGOUT
+  MEDIA_UPLOADED
+  MEDIA_UPDATED
+  MEDIA_DELETED
+  API_KEY_CREATED
+  API_KEY_EXPIRED
+  WEBHOOK_FAILED
+  BACKUP_COMPLETED
+  BACKUP_FAILED
+  CUSTOM
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+  ARCHIVED
+  DELETED
+}
+
+enum NotificationPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+  URGENT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+  WEBHOOK
+  SLACK
+  DISCORD
+}
+
+// =============================================================================
 // WORKFLOW INSTANCE SYSTEM
 // =============================================================================
 
@@ -900,6 +971,140 @@ model WorkflowInstance {
   @@index([status])
   @@index([startedAt])
   @@index([completedAt])
+}
+
+// =============================================================================
+// NOTIFICATION SYSTEM
+// =============================================================================
+
+model Notification {
+  id          String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String            @db.Uuid
+  type        NotificationType
+  title       String
+  message     String            @db.Text
+  status      NotificationStatus @default(UNREAD)
+  priority    NotificationPriority @default(MEDIUM)
+  channels    NotificationChannel[]
+  data        Json?
+  metadata    Json?
+  expiresAt   DateTime?
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  readAt      DateTime?
+  archivedAt  DateTime?
+  clickedAt   DateTime?
+  actionUrl   String?
+  imageUrl    String?
+  templateId  String?           @db.Uuid
+  batchId     String?
+  parentId    String?           @db.Uuid
+  relatedEntityType String?
+  relatedEntityId   String?
+  
+  // Relations
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template    NotificationTemplate? @relation(fields: [templateId], references: [id])
+  parent      Notification?     @relation("NotificationParent", fields: [parentId], references: [id])
+  children    Notification[]    @relation("NotificationParent")
+  analytics   NotificationAnalytics[]
+  
+  // Multi-tenant
+  tenantId    String?           @db.Uuid
+  tenant      Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  
+  @@map("notifications")
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([priority])
+  @@index([tenantId])
+  @@index([createdAt])
+  @@index([scheduledAt])
+  @@index([expiresAt])
+}
+
+model NotificationTemplate {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String
+  subject     String?
+  body        String   @db.Text
+  htmlContent String?  @db.Text
+  type        NotificationType
+  channels    NotificationChannel[]
+  variables   String[] @default([])
+  isActive    Boolean  @default(true)
+  conditions  Json?
+  
+  // Relations
+  notifications Notification[]
+  
+  // Multi-tenant
+  tenantId    String?  @db.Uuid
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([name, tenantId])
+  @@map("notification_templates")
+  @@index([type])
+  @@index([isActive])
+  @@index([tenantId])
+}
+
+model NotificationPreferences {
+  id        String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId    String              @db.Uuid
+  channels  Json                @default("{}")
+  quietHours Json?
+  frequency String              @default("immediate")
+  categories Json               @default("{}")
+  enabled   Boolean             @default(true)
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Multi-tenant
+  tenantId  String?             @db.Uuid
+  tenant    Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Audit fields
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  
+  @@unique([userId, tenantId])
+  @@map("notification_preferences")
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model NotificationAnalytics {
+  id             String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  notificationId String   @db.Uuid
+  userId         String?  @db.Uuid
+  event          String   // sent, delivered, opened, clicked, etc.
+  timestamp      DateTime @default(now())
+  metadata       Json?
+  
+  // Relations
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  
+  // Multi-tenant
+  tenantId     String?      @db.Uuid
+  tenant       Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@map("notification_analytics")
+  @@index([notificationId])
+  @@index([userId])
+  @@index([event])
+  @@index([timestamp])
+  @@index([tenantId])
 }
 
 // =============================================================================
