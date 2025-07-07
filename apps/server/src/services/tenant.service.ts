@@ -1,24 +1,12 @@
 import { prisma } from "@cms-platform/database/client"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
-import type { Tenant } from "@cms-platform/database/types"
+import type { Tenant, User, TenantPlan, TenantStatus, UserRole } from "@prisma/client"
 
-export enum TenantPlan {
-  FREE = "FREE",
-  BASIC = "BASIC",
-  PROFESSIONAL = "PROFESSIONAL",
-  ENTERPRISE = "ENTERPRISE",
-}
-
-export enum TenantStatus {
-  ACTIVE = "ACTIVE",
-  SUSPENDED = "SUSPENDED",
-  PENDING = "PENDING",
-  ARCHIVED = "ARCHIVED",
-}
+export { TenantPlan, TenantStatus } from "@prisma/client"
 
 export enum TenantUserRole {
-  OWNER = "OWNER",
+  OWNER = "SUPER_ADMIN",
   ADMIN = "ADMIN",
   EDITOR = "EDITOR",
   VIEWER = "VIEWER",
@@ -32,6 +20,7 @@ interface TenantUsageLimits {
   maxApiRequests: number
   maxWebhooks: number
   maxWorkflows: number
+  [key: string]: number
 }
 
 interface TenantCurrentUsage {
@@ -42,13 +31,15 @@ interface TenantCurrentUsage {
   apiRequests: number
   webhooks: number
   workflows: number
+  [key: string]: number
 }
 
 interface TenantUser {
   id: string
   email: string
-  name: string | null
-  role: TenantUserRole
+  firstName: string
+  lastName: string
+  role: UserRole
   joinedAt: Date
 }
 
@@ -99,17 +90,17 @@ export class TenantService {
             description,
             plan: plan || TenantPlan.FREE,
             status: TenantStatus.ACTIVE,
-            usageLimits,
-            currentUsage,
+            usageLimits: usageLimits as any,
+            currentUsage: currentUsage as any,
           },
         })
 
-        // Create tenant-user relationship with owner role
-        await tx.tenantUser.create({
+        // Update user to be associated with this tenant and set as owner
+        await tx.user.update({
+          where: { id: ownerId },
           data: {
             tenantId: newTenant.id,
-            userId: ownerId,
-            role: TenantUserRole.OWNER,
+            role: UserRole.SUPER_ADMIN, // Owner role
           },
         })
 
@@ -117,7 +108,7 @@ export class TenantService {
       })
 
       logger.info(`Tenant created: ${tenant.name} (${tenant.id})`)
-      return tenant as Tenant
+      return tenant
     } catch (error) {
       logger.error("Error creating tenant:", error)
       throw error
@@ -133,11 +124,7 @@ export class TenantService {
         where: { id },
         include: includeUsers
           ? {
-              tenantUsers: {
-                include: {
-                  user: true,
-                },
-              },
+              users: true,
             }
           : undefined,
       })
@@ -146,7 +133,7 @@ export class TenantService {
         throw ApiError.notFound("Tenant not found")
       }
 
-      return tenant as Tenant
+      return tenant
     } catch (error) {
       logger.error(`Error getting tenant by ID ${id}:`, error)
       throw error
@@ -162,11 +149,7 @@ export class TenantService {
         where: { slug },
         include: includeUsers
           ? {
-              tenantUsers: {
-                include: {
-                  user: true,
-                },
-              },
+              users: true,
             }
           : undefined,
       })
@@ -175,7 +158,7 @@ export class TenantService {
         throw ApiError.notFound("Tenant not found")
       }
 
-      return tenant as Tenant
+      return tenant
     } catch (error) {
       logger.error(`Error getting tenant by slug ${slug}:`, error)
       throw error
@@ -213,7 +196,7 @@ export class TenantService {
       }
 
       logger.info(`Tenant updated: ${tenant.name} (${tenant.id})`)
-      return tenant as Tenant
+      return tenant
     } catch (error) {
       logger.error(`Error updating tenant ${id}:`, error)
       throw error
@@ -254,8 +237,11 @@ export class TenantService {
       }
 
       await prisma.$transaction(async (tx) => {
-        // Delete all tenant-user relationships
-        await tx.tenantUser.deleteMany({ where: { tenantId: id } })
+        // Update all users to remove tenant association
+        await tx.user.updateMany({
+          where: { tenantId: id },
+          data: { tenantId: null },
+        })
 
         // Delete tenant
         await tx.tenant.delete({ where: { id } })
@@ -301,10 +287,10 @@ export class TenantService {
       }
 
       if (ownerId) {
-        where.tenantUsers = {
+        where.users = {
           some: {
-            userId: ownerId,
-            role: TenantUserRole.OWNER,
+            id: ownerId,
+            role: UserRole.SUPER_ADMIN,
           },
         }
       }
@@ -316,9 +302,8 @@ export class TenantService {
           take: limit,
           orderBy: { createdAt: "desc" },
           include: {
-            tenantUsers: {
-              where: { role: TenantUserRole.OWNER },
-              include: { user: true },
+            users: {
+              where: { role: UserRole.SUPER_ADMIN },
             },
           },
         }),
@@ -326,7 +311,7 @@ export class TenantService {
       ])
 
       return {
-        tenants: tenants as Tenant[],
+        tenants,
         total,
         page,
         limit,
@@ -345,7 +330,7 @@ export class TenantService {
     tenantId: string,
     data: {
       userId: string
-      role: TenantUserRole
+      role: UserRole
     },
   ): Promise<void> {
     try {
@@ -357,18 +342,9 @@ export class TenantService {
         throw ApiError.badRequest("User does not exist")
       }
 
-      // Check if user is already in tenant
-      const existingTenantUser = await prisma.tenantUser.findUnique({
-        where: {
-          tenantId_userId: {
-            tenantId,
-            userId,
-          },
-        },
-      })
-
-      if (existingTenantUser) {
-        throw ApiError.conflict("User is already a member of this tenant")
+      // Check if user is already in a tenant
+      if (user.tenantId) {
+        throw ApiError.conflict("User is already a member of another tenant")
       }
 
       // Check usage limits
@@ -376,10 +352,10 @@ export class TenantService {
 
       // Add user to tenant
       await prisma.$transaction(async (tx) => {
-        await tx.tenantUser.create({
+        await tx.user.update({
+          where: { id: userId },
           data: {
             tenantId,
-            userId,
             role,
           },
         })
@@ -400,26 +376,19 @@ export class TenantService {
    */
   public async removeUserFromTenant(tenantId: string, userId: string): Promise<void> {
     try {
-      // Check if user is the owner
-      const tenantUser = await prisma.tenantUser.findUnique({
-        where: {
-          tenantId_userId: {
-            tenantId,
-            userId,
-          },
-        },
-      })
+      // Check if user exists and is in the tenant
+      const user = await prisma.user.findUnique({ where: { id: userId } })
 
-      if (!tenantUser) {
+      if (!user || user.tenantId !== tenantId) {
         throw ApiError.notFound("User is not a member of this tenant")
       }
 
-      if (tenantUser.role === TenantUserRole.OWNER) {
+      if (user.role === UserRole.SUPER_ADMIN) {
         // Check if there are other owners
-        const ownerCount = await prisma.tenantUser.count({
+        const ownerCount = await prisma.user.count({
           where: {
             tenantId,
-            role: TenantUserRole.OWNER,
+            role: UserRole.SUPER_ADMIN,
           },
         })
 
@@ -429,470 +398,8 @@ export class TenantService {
       }
 
       await prisma.$transaction(async (tx) => {
-        await tx.tenantUser.delete({
-          where: {
-            tenantId_userId: {
-              tenantId,
-              userId,
-            },
-          },
-        })
-
-        // Update usage count
-        await this.decrementUsage(tenantId, "users", 1, tx)
-      })
-
-      logger.info(`User ${userId} removed from tenant ${tenantId}`)
-    } catch (error) {
-      logger.error(`Error removing user from tenant ${tenantId}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Update user role in tenant
-   */
-  public async updateUserRole(tenantId: string, userId: string, newRole: TenantUserRole): Promise<void> {
-    try {
-      const tenantUser = await prisma.tenantUser.findUnique({
-        where: {
-          tenantId_userId: {
-            tenantId,
-            userId,
-          },
-        },
-      })
-
-      if (!tenantUser) {
-        throw ApiError.notFound("User is not a member of this tenant")
-      }
-
-      // If changing from owner role, ensure there's another owner
-      if (tenantUser.role === TenantUserRole.OWNER && newRole !== TenantUserRole.OWNER) {
-        const ownerCount = await prisma.tenantUser.count({
-          where: {
-            tenantId,
-            role: TenantUserRole.OWNER,
-          },
-        })
-
-        if (ownerCount <= 1) {
-          throw ApiError.badRequest("Cannot change role of the last owner")
-        }
-      }
-
-      await prisma.tenantUser.update({
-        where: {
-          tenantId_userId: {
-            tenantId,
-            userId,
-          },
-        },
-        data: { role: newRole },
-      })
-
-      logger.info(`User ${userId} role updated to ${newRole} in tenant ${tenantId}`)
-    } catch (error) {
-      logger.error(`Error updating user role in tenant ${tenantId}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Get tenant users
-   */
-  public async getTenantUsers(
-    tenantId: string,
-    options: {
-      role?: TenantUserRole
-      page?: number
-      limit?: number
-    } = {},
-  ): Promise<{
-    users: TenantUser[]
-    total: number
-    page: number
-    limit: number
-    totalPages: number
-  }> {
-    try {
-      const { role, page = 1, limit = 10 } = options
-      const where: any = { tenantId }
-
-      if (role) {
-        where.role = role
-      }
-
-      const [tenantUsers, total] = await prisma.$transaction([
-        prisma.tenantUser.findMany({
-          where,
-          skip: (page - 1) * limit,
-          take: limit,
-          include: {
-            user: true,
-          },
-          orderBy: { createdAt: "desc" },
-        }),
-        prisma.tenantUser.count({ where }),
-      ])
-
-      const users: TenantUser[] = tenantUsers.map((tu) => ({
-        id: tu.user.id,
-        email: tu.user.email,
-        name: tu.user.name,
-        role: tu.role as TenantUserRole,
-        joinedAt: tu.createdAt,
-      }))
-
-      return {
-        users,
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      }
-    } catch (error) {
-      logger.error(`Error getting tenant users for ${tenantId}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Get user's tenants
-   */
-  public async getUserTenants(userId: string): Promise<Array<Tenant & { role: TenantUserRole }>> {
-    try {
-      const tenantUsers = await prisma.tenantUser.findMany({
-        where: { userId },
-        include: {
-          tenant: true,
-        },
-      })
-
-      return tenantUsers.map((tu) => ({
-        ...tu.tenant,
-        role: tu.role as TenantUserRole,
-      })) as Array<Tenant & { role: TenantUserRole }>
-    } catch (error) {
-      logger.error(`Error getting user tenants for ${userId}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Suspend tenant
-   */
-  public async suspendTenant(id: string, reason?: string): Promise<void> {
-    try {
-      await prisma.tenant.update({
-        where: { id },
-        data: {
-          status: TenantStatus.SUSPENDED,
-          suspensionReason: reason,
-        },
-      })
-
-      logger.info(`Tenant ${id} suspended. Reason: ${reason || "No reason provided"}`)
-    } catch (error) {
-      logger.error(`Error suspending tenant ${id}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Activate tenant
-   */
-  public async activateTenant(id: string): Promise<void> {
-    try {
-      await prisma.tenant.update({
-        where: { id },
-        data: {
-          status: TenantStatus.ACTIVE,
-          suspensionReason: null,
-        },
-      })
-
-      logger.info(`Tenant ${id} activated`)
-    } catch (error) {
-      logger.error(`Error activating tenant ${id}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Upgrade/downgrade tenant plan
-   */
-  public async changeTenantPlan(id: string, newPlan: TenantPlan): Promise<void> {
-    try {
-      const tenant = await this.getTenantById(id)
-      const newLimits = this.getPlanLimits(newPlan)
-      const currentUsage = tenant.currentUsage as TenantCurrentUsage
-
-      // Check if current usage exceeds new plan limits
-      const violations = this.checkUsageViolations(currentUsage, newLimits)
-      if (violations.length > 0) {
-        throw ApiError.badRequest(`Cannot downgrade plan. Current usage exceeds new limits: ${violations.join(", ")}`)
-      }
-
-      await prisma.tenant.update({
-        where: { id },
-        data: {
-          plan: newPlan,
-          usageLimits: newLimits,
-        },
-      })
-
-      logger.info(`Tenant ${id} plan changed to ${newPlan}`)
-    } catch (error) {
-      logger.error(`Error changing tenant plan ${id}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Get tenant usage statistics
-   */
-  public async getTenantUsage(id: string): Promise<{
-    current: TenantCurrentUsage
-    limits: TenantUsageLimits
-    percentages: Record<string, number>
-  }> {
-    try {
-      const tenant = await this.getTenantById(id)
-      const current = tenant.currentUsage as TenantCurrentUsage
-      const limits = tenant.usageLimits as TenantUsageLimits
-
-      const percentages = {
-        users: (current.users / limits.maxUsers) * 100,
-        storage: (current.storage / limits.maxStorage) * 100,
-        contentTypes: (current.contentTypes / limits.maxContentTypes) * 100,
-        contents: (current.contents / limits.maxContents) * 100,
-        apiRequests: (current.apiRequests / limits.maxApiRequests) * 100,
-        webhooks: (current.webhooks / limits.maxWebhooks) * 100,
-        workflows: (current.workflows / limits.maxWorkflows) * 100,
-      }
-
-      return { current, limits, percentages }
-    } catch (error) {
-      logger.error(`Error getting tenant usage ${id}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Reset monthly usage counters
-   */
-  public async resetMonthlyUsage(id: string): Promise<void> {
-    try {
-      const tenant = await this.getTenantById(id)
-      const currentUsage = tenant.currentUsage as TenantCurrentUsage
-
-      await prisma.tenant.update({
-        where: { id },
-        data: {
-          currentUsage: {
-            ...currentUsage,
-            apiRequests: 0, // Reset monthly counter
-          },
-        },
-      })
-
-      logger.info(`Monthly usage reset for tenant ${id}`)
-    } catch (error) {
-      logger.error(`Error resetting monthly usage for tenant ${id}:`, error)
-      throw error
-    }
-  }
-
-  /**
-   * Bulk operations
-   */
-  public async bulkUpdateTenantStatus(tenantIds: string[], status: TenantStatus): Promise<number> {
-    try {
-      const result = await prisma.tenant.updateMany({
-        where: {
-          id: { in: tenantIds },
-        },
-        data: { status },
-      })
-
-      logger.info(`Bulk updated ${result.count} tenants to status ${status}`)
-      return result.count
-    } catch (error) {
-      logger.error("Error in bulk tenant status update:", error)
-      throw error
-    }
-  }
-
-  /**
-   * Check if user has permission in tenant
-   */
-  public async checkUserPermission(tenantId: string, userId: string, requiredRole: TenantUserRole): Promise<boolean> {
-    try {
-      const tenantUser = await prisma.tenantUser.findUnique({
-        where: {
-          tenantId_userId: {
-            tenantId,
-            userId,
-          },
-        },
-      })
-
-      if (!tenantUser) return false
-
-      const roleHierarchy = {
-        [TenantUserRole.VIEWER]: 1,
-        [TenantUserRole.EDITOR]: 2,
-        [TenantUserRole.ADMIN]: 3,
-        [TenantUserRole.OWNER]: 4,
-      }
-
-      return roleHierarchy[tenantUser.role as TenantUserRole] >= roleHierarchy[requiredRole]
-    } catch (error) {
-      logger.error(`Error checking user permission:`, error)
-      return false
-    }
-  }
-
-  // Private helper methods
-
-  private async validateUsageLimit(
-    tenantId: string,
-    usageType: keyof TenantCurrentUsage,
-    increment = 1,
-  ): Promise<void> {
-    const tenant = await this.getTenantById(tenantId)
-    const current = tenant.currentUsage as TenantCurrentUsage
-    const limits = tenant.usageLimits as TenantUsageLimits
-
-    const limitKey = `max${usageType.charAt(0).toUpperCase() + usageType.slice(1)}` as keyof TenantUsageLimits
-    const currentValue = current[usageType]
-    const maxValue = limits[limitKey]
-
-    if (currentValue + increment > maxValue) {
-      throw ApiError.badRequest(`Tenant has reached the maximum limit for ${usageType}`)
-    }
-  }
-
-  private async incrementUsage(
-    tenantId: string,
-    usageType: keyof TenantCurrentUsage,
-    amount = 1,
-    tx?: any,
-  ): Promise<void> {
-    const prismaClient = tx || prisma
-    const tenant = await prismaClient.tenant.findUnique({ where: { id: tenantId } })
-    const currentUsage = tenant.currentUsage as TenantCurrentUsage
-
-    await prismaClient.tenant.update({
-      where: { id: tenantId },
-      data: {
-        currentUsage: {
-          ...currentUsage,
-          [usageType]: currentUsage[usageType] + amount,
-        },
-      },
-    })
-  }
-
-  private async decrementUsage(
-    tenantId: string,
-    usageType: keyof TenantCurrentUsage,
-    amount = 1,
-    tx?: any,
-  ): Promise<void> {
-    const prismaClient = tx || prisma
-    const tenant = await prismaClient.tenant.findUnique({ where: { id: tenantId } })
-    const currentUsage = tenant.currentUsage as TenantCurrentUsage
-
-    await prismaClient.tenant.update({
-      where: { id: tenantId },
-      data: {
-        currentUsage: {
-          ...currentUsage,
-          [usageType]: Math.max(0, currentUsage[usageType] - amount),
-        },
-      },
-    })
-  }
-
-  private checkUsageViolations(current: TenantCurrentUsage, limits: TenantUsageLimits): string[] {
-    const violations: string[] = []
-
-    if (current.users > limits.maxUsers) violations.push("users")
-    if (current.storage > limits.maxStorage) violations.push("storage")
-    if (current.contentTypes > limits.maxContentTypes) violations.push("content types")
-    if (current.contents > limits.maxContents) violations.push("contents")
-    if (current.webhooks > limits.maxWebhooks) violations.push("webhooks")
-    if (current.workflows > limits.maxWorkflows) violations.push("workflows")
-
-    return violations
-  }
-
-  private getPlanLimits(plan: TenantPlan): TenantUsageLimits {
-    switch (plan) {
-      case TenantPlan.FREE:
-        return {
-          maxUsers: 3,
-          maxStorage: 100, // 100 MB
-          maxContentTypes: 5,
-          maxContents: 100,
-          maxApiRequests: 1000,
-          maxWebhooks: 2,
-          maxWorkflows: 1,
-        }
-      case TenantPlan.BASIC:
-        return {
-          maxUsers: 10,
-          maxStorage: 1024, // 1 GB
-          maxContentTypes: 20,
-          maxContents: 1000,
-          maxApiRequests: 10000,
-          maxWebhooks: 10,
-          maxWorkflows: 5,
-        }
-      case TenantPlan.PROFESSIONAL:
-        return {
-          maxUsers: 25,
-          maxStorage: 10240, // 10 GB
-          maxContentTypes: 50,
-          maxContents: 10000,
-          maxApiRequests: 100000,
-          maxWebhooks: 25,
-          maxWorkflows: 15,
-        }
-      case TenantPlan.ENTERPRISE:
-        return {
-          maxUsers: 100,
-          maxStorage: 102400, // 100 GB
-          maxContentTypes: 200,
-          maxContents: 100000,
-          maxApiRequests: 1000000,
-          maxWebhooks: 100,
-          maxWorkflows: 50,
-        }
-      default:
-        return {
-          maxUsers: 3,
-          maxStorage: 100,
-          maxContentTypes: 5,
-          maxContents: 100,
-          maxApiRequests: 1000,
-          maxWebhooks: 2,
-          maxWorkflows: 1,
-        }
-    }
-  }
-
-  private getInitialUsage(): TenantCurrentUsage {
-    return {
-      users: 1, // Owner is the first user
-      storage: 0,
-      contentTypes: 0,
-      contents: 0,
-      apiRequests: 0,
-      webhooks: 0,
-      workflows: 0,
-    }
-  }
-}
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            tenantId: null,
+            role: UserRole.VIEWER, // Reset

@@ -258,74 +258,6 @@ export class ContentRepository extends BaseRepository<Content, ContentCreateInpu
     return (content.versions as unknown as ContentVersion[]) || []
   }
 
-  /**
-   * Search content
-   */
-  async search(
-    query: string, 
-    contentTypeId?: string, 
-    tenantId?: string,
-    options: {
-      status?: ContentStatus
-      locale?: string
-      limit?: number
-      offset?: number
-    } = {}
-  ): Promise<Content[]> {
-    const { status, locale, limit = 50, offset = 0 } = options
-
-    const where: any = {
-      OR: [
-        { 
-          data: {
-            path: ['title'],
-            string_contains: query,
-          }
-        },
-        { 
-          data: {
-            path: ['name'],
-            string_contains: query,
-          }
-        },
-        { 
-          data: {
-            path: ['description'],
-            string_contains: query,
-          }
-        },
-        { slug: { contains: query, mode: 'insensitive' } },
-      ],
-    }
-
-    if (contentTypeId) {
-      where.contentTypeId = contentTypeId
-    }
-
-    if (tenantId) {
-      where.tenantId = tenantId
-    }
-
-    if (status) {
-      where.status = status
-    }
-
-    if (locale) {
-      where.locale = locale
-    }
-
-    // Note: For complex queries with take/skip, we need to use the model directly
-    try {
-      return await this.model.findMany({
-        where,
-        take: limit,
-        skip: offset,
-        orderBy: { updatedAt: 'desc' },
-      })
-    } catch (error) {
-      this.handleError(error, 'search')
-    }
-  }
 
   /**
    * Find content by creator
@@ -552,5 +484,214 @@ export class ContentRepository extends BaseRepository<Content, ContentCreateInpu
     })
 
     return result.count
+  }
+
+  /**
+   * Get content type facets for search
+   */
+  async getContentTypeFacets(tenantId?: string): Promise<any[]> {
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    try {
+      const result = await this.prisma.content.groupBy({
+        by: ['contentTypeId'],
+        where,
+        _count: true
+      } as any)
+      return result
+    } catch (error) {
+      console.error('Error getting content type facets:', error)
+      return []
+    }
+  }
+
+  /**
+   * Get status facets for search
+   */
+  async getStatusFacets(tenantId?: string): Promise<any[]> {
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    try {
+      const result = await this.prisma.content.groupBy({
+        by: ['status'],
+        where,
+        _count: true
+      } as any)
+      return result
+    } catch (error) {
+      console.error('Error getting status facets:', error)
+      return []
+    }
+  }
+
+  /**
+   * Get tags facets for search
+   */
+  async getTagsFacets(tenantId?: string): Promise<any[]> {
+    // This would need to be implemented based on your tag structure
+    // For now, return empty array
+    return []
+  }
+
+  /**
+   * Get categories facets for search
+   */
+  async getCategoriesFacets(tenantId?: string): Promise<any[]> {
+    // This would need to be implemented based on your category structure
+    // For now, return empty array
+    return []
+  }
+
+  /**
+   * Get content statistics
+   */
+  async getStats(tenantId?: string): Promise<any> {
+    const where: any = {}
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    const [total, published, draft, archived] = await Promise.all([
+      this.prisma.content.count({ where }),
+      this.prisma.content.count({ where: { ...where, status: ContentStatus.PUBLISHED } }),
+      this.prisma.content.count({ where: { ...where, status: ContentStatus.DRAFT } }),
+      this.prisma.content.count({ where: { ...where, status: ContentStatus.ARCHIVED } })
+    ])
+
+    return {
+      totalContent: total,
+      publishedContent: published,
+      draftContent: draft,
+      archivedContent: archived,
+      scheduledContent: 0, // Would need to be implemented based on scheduling logic
+      contentByType: {},
+      contentByLocale: {},
+      contentByStatus: {
+        published,
+        draft,
+        archived
+      },
+      recentActivity: [],
+      topAuthors: [],
+      popularContent: []
+    }
+  }
+
+  /**
+   * Get content tree (hierarchical content)
+   */
+  async getContentTree(contentTypeId?: string, tenantId?: string, maxDepth: number = 5): Promise<any[]> {
+    const where: any = {}
+    if (contentTypeId) {
+      where.contentTypeId = contentTypeId
+    }
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    // For now, return flat structure - would need to implement hierarchy based on your schema
+    return this.prisma.content.findMany({
+      where,
+      include: {
+        contentType: true
+      }
+    })
+  }
+
+  /**
+   * Health check for repository
+   */
+  async healthCheck(): Promise<{ status: string; timestamp: string }> {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`
+      return { status: 'healthy', timestamp: new Date().toISOString() }
+    } catch (error) {
+      return { status: 'unhealthy', timestamp: new Date().toISOString() }
+    }
+  }
+
+  /**
+   * Search content with advanced options
+   */
+  async search(options: any): Promise<any> {
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      contentType,
+      status,
+      locale,
+      tags,
+      categories,
+      author,
+      dateFrom,
+      dateTo,
+      sortBy = 'updatedAt',
+      sortOrder = 'desc',
+      tenantId
+    } = options
+
+    const where: any = {}
+    
+    if (tenantId) {
+      where.tenantId = tenantId
+    }
+
+    if (contentType) {
+      where.contentTypeId = contentType
+    }
+
+    if (status) {
+      if (Array.isArray(status)) {
+        where.status = { in: status }
+      } else {
+        where.status = status
+      }
+    }
+
+    if (locale) {
+      where.locale = locale
+    }
+
+    if (author) {
+      where.createdById = author
+    }
+
+    if (dateFrom || dateTo) {
+      where.createdAt = {}
+      if (dateFrom) where.createdAt.gte = dateFrom
+      if (dateTo) where.createdAt.lte = dateTo
+    }
+
+    if (search) {
+      where.OR = [
+        { slug: { contains: search, mode: 'insensitive' } },
+        // Add more search fields as needed
+      ]
+    }
+
+    const [content, total] = await Promise.all([
+      this.prisma.content.findMany({
+        where,
+        take: limit,
+        skip: (page - 1) * limit,
+        orderBy: { [sortBy]: sortOrder }
+      }),
+      this.prisma.content.count({ where })
+    ])
+
+    return {
+      content,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    }
   }
 }

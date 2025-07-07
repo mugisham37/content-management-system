@@ -633,4 +633,11 @@ export class ContentVersionRepository extends BaseRepository<ContentVersion, Con
       throw new DatabaseError(`Failed to get version stats for content ${contentId}`, undefined, error)
     }
   }
+
+  /**
+   * Find version by content ID and version number (alias for findByContentIdAndVersion)
+   */
+  async findByVersion(contentId: string, version: number): Promise<ContentVersion | null> {
+    return this.findByContentIdAndVersion(contentId, version)
+  }
 }
