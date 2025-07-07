@@ -523,6 +523,41 @@ export class ElasticsearchService {
     return updateIndexMapping(index, mappings)
   }
 
+  async bulkOperation(operations: Array<{
+    index?: string
+    operation: "index" | "update" | "delete"
+    document?: any
+    id: string
+  }>): Promise<void> {
+    if (!this.config.enabled || !esClient || operations.length === 0) return
+
+    try {
+      const body = []
+      
+      for (const op of operations) {
+        if (op.operation === "index") {
+          body.push({ index: { _index: op.index, _id: op.id } })
+          body.push(op.document)
+        } else if (op.operation === "update") {
+          body.push({ update: { _index: op.index, _id: op.id } })
+          body.push({ doc: op.document })
+        } else if (op.operation === "delete") {
+          body.push({ delete: { _index: op.index, _id: op.id } })
+        }
+      }
+
+      await esClient.bulk({
+        body,
+        refresh: true
+      })
+
+      logger.debug(`Bulk operation completed with ${operations.length} operations`)
+    } catch (error) {
+      logger.error("Error in bulk operation:", error)
+      throw error
+    }
+  }
+
   get isEnabled(): boolean {
     return this.config.enabled
   }

@@ -2,7 +2,7 @@ import { ElasticsearchService } from "./elasticsearch.service"
 import { logger } from "../utils/logger"
 import { config } from "../config"
 import { cacheService } from "./cache.service"
-import type { Content, User, Media } from "@cms-platform/database/types"
+import type { Content, User, Media, SearchAnalytics } from "@cms-platform/database/types"
 
 interface SearchParams {
   query: string
@@ -42,7 +42,7 @@ interface AutocompleteResult {
   }>
 }
 
-interface SearchAnalytics {
+interface SearchAnalyticsInput {
   query: string
   results: number
   timestamp: Date
@@ -181,7 +181,7 @@ export class SearchService {
         tenantId,
       })
 
-      return result
+      return result as SearchResult<Content>
     } catch (error) {
       logger.error("Error searching content:", error)
       throw error
@@ -439,7 +439,8 @@ export class SearchService {
           }
 
           const result = await this.esService.searchDocuments("search_analytics", searchQuery)
-          return result.aggregations?.popular_queries?.buckets?.map((bucket: any) => bucket.key) || []
+          const aggregations = result.aggregations as any
+          return aggregations?.popular_queries?.buckets?.map((bucket: any) => bucket.key) || []
         },
         { ttl: 3600 },
       )
@@ -477,9 +478,10 @@ export class SearchService {
         updatedBy: content.updatedById,
         publishedBy: content.publishedById,
         tenantId: content.tenantId,
+        _id: content.id, // Add _id for reindexCollection compatibility
       })
 
-      await this.esService.reindexCollection("content", contentCollection, transform)
+      await this.esService.reindexCollection("content", contentCollection.map(c => ({ ...c, _id: c.id })), transform)
       await cacheService.deletePattern("search:content:*")
       logger.info("Content reindexing completed")
     } catch (error) {
@@ -502,17 +504,18 @@ export class SearchService {
 
       const transform = (user: User) => ({
         id: user.id,
-        name: user.name,
+        name: `${user.firstName} ${user.lastName}`.trim(),
         email: user.email,
-        username: user.username,
+        username: user.email, // Using email as username since username doesn't exist in schema
         role: user.role,
         status: user.status,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
         tenantId: user.tenantId,
+        _id: user.id, // Add _id for reindexCollection compatibility
       })
 
-      await this.esService.reindexCollection("users", userCollection, transform)
+      await this.esService.reindexCollection("users", userCollection.map(u => ({ ...u, _id: u.id })), transform)
       await cacheService.deletePattern("search:users:*")
       logger.info("User reindexing completed")
     } catch (error) {
@@ -535,18 +538,19 @@ export class SearchService {
 
       const transform = (media: Media) => ({
         id: media.id,
-        name: media.name,
+        name: media.filename, // Use filename as name
         alt: media.alt,
-        description: media.description,
+        description: media.caption || media.alt || '', // Use caption or alt as description
         mimeType: media.mimeType,
         size: media.size,
-        tags: media.tags,
+        tags: media.tags || [],
         createdAt: media.createdAt,
         updatedAt: media.updatedAt,
         tenantId: media.tenantId,
+        _id: media.id, // Add _id for reindexCollection compatibility
       })
 
-      await this.esService.reindexCollection("media", mediaCollection, transform)
+      await this.esService.reindexCollection("media", mediaCollection.map(m => ({ ...m, _id: m.id })), transform)
       await cacheService.deletePattern("search:media:*")
       logger.info("Media reindexing completed")
     } catch (error) {
@@ -597,9 +601,9 @@ export class SearchService {
     try {
       const doc = {
         id: user.id,
-        name: user.name,
+        name: `${user.firstName} ${user.lastName}`.trim(),
         email: user.email,
-        username: user.username,
+        username: user.email, // Using email as username since username doesn't exist in schema
         role: user.role,
         status: user.status,
         createdAt: user.createdAt,
@@ -624,12 +628,12 @@ export class SearchService {
     try {
       const doc = {
         id: media.id,
-        name: media.name,
+        name: media.filename, // Use filename as name
         alt: media.alt,
-        description: media.description,
+        description: media.caption || media.alt || '', // Use caption or alt as description
         mimeType: media.mimeType,
         size: media.size,
-        tags: media.tags,
+        tags: media.tags || [],
         createdAt: media.createdAt,
         updatedAt: media.updatedAt,
         tenantId: media.tenantId,
@@ -770,17 +774,18 @@ export class SearchService {
       }
 
       const result = await this.esService.searchDocuments("search_analytics", searchQuery)
+      const aggregations = result.aggregations as any
 
       return {
-        totalSearches: result.aggregations?.total_searches?.value || 0,
+        totalSearches: aggregations?.total_searches?.value || 0,
         popularQueries:
-          result.aggregations?.popular_queries?.buckets?.map((bucket: any) => ({
+          aggregations?.popular_queries?.buckets?.map((bucket: any) => ({
             query: bucket.key,
             count: bucket.doc_count,
           })) || [],
-        averageResults: result.aggregations?.avg_results?.value || 0,
+        averageResults: aggregations?.avg_results?.value || 0,
         zeroResultQueries:
-          result.aggregations?.zero_result_queries?.queries?.buckets?.map((bucket: any) => ({
+          aggregations?.zero_result_queries?.queries?.buckets?.map((bucket: any) => ({
             query: bucket.key,
             count: bucket.doc_count,
           })) || [],
@@ -883,7 +888,7 @@ export class SearchService {
     }
   }
 
-  private async trackSearchAnalytics(analytics: SearchAnalytics): Promise<void> {
+  private async trackSearchAnalytics(analytics: SearchAnalyticsInput): Promise<void> {
     try {
       if (!this.esService.isEnabled) return
 

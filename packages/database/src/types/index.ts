@@ -2,23 +2,25 @@
 // DATABASE TYPES
 // =============================================================================
 
+// Export Prisma-generated types
+export type {
+  User,
+  Content,
+  Media,
+  Tenant,
+  ContentType,
+  UserRole,
+  UserStatus,
+  ContentStatus,
+  MediaType,
+  Prisma,
+} from '@prisma/client'
+
 // Export media types
 export * from './media.types'
 
-// Content Type related types
-export interface ContentType {
-  id: string
-  name: string
-  displayName: string
-  description?: string
-  isSystem: boolean
-  fields?: FieldDefinition[]
-  tenantId?: string
-  createdBy?: string
-  updatedBy?: string
-  createdAt: Date
-  updatedAt: Date
-}
+// Import Prisma types for extending
+import type { ContentType as PrismaContentType } from '@prisma/client'
 
 export interface FieldType {
   id: string
@@ -56,7 +58,7 @@ export interface UpdateContentTypeData {
   updatedBy?: string
 }
 
-export interface ContentTypeWithFields extends ContentType {
+export interface ContentTypeWithFields extends Omit<PrismaContentType, 'fields'> {
   fields: FieldDefinition[]
 }
 
@@ -248,6 +250,21 @@ export interface UserAnalytics {
   commentCount: number
   mediaCount: number
   lastLoginAt?: Date
+}
+
+export interface SearchAnalytics {
+  total_searches: number
+  popular_queries: Array<{
+    query: string
+    count: number
+    last_searched: Date
+  }>
+  avg_results: number
+  zero_result_queries: Array<{
+    query: string
+    count: number
+    last_searched: Date
+  }>
 }
 
 // Audit types
