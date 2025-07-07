@@ -175,6 +175,13 @@ export const config = {
     }
   },
 
+  // Elasticsearch Configuration
+  elasticsearch: {
+    enabled: process.env.ELASTICSEARCH_ENABLED === 'true',
+    node: process.env.ELASTICSEARCH_NODE || 'http://localhost:9200',
+    auth: process.env.ELASTICSEARCH_AUTH,
+  },
+
   // Monitoring Configuration
   monitoring: {
     enabled: process.env.MONITORING_ENABLED === 'true',
