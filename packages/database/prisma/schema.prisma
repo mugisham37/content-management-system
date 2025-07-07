@@ -117,6 +117,8 @@ model User {
   // Audit fields
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  createdJobs Job[] @relation("JobCreator")
   
   @@unique([email, tenantId])
   @@map("users")
@@ -774,4 +776,53 @@ enum RouteStatus {
   ACTIVE
   INACTIVE
   DEPRECATED
+}
+
+// =============================================================================
+// JOB SCHEDULER SYSTEM
+// =============================================================================
+
+model Job {
+  id              String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name            String
+  type            String     // "cron" | "immediate" | "scheduled"
+  status          JobStatus  @default(PENDING)
+  cronExpression  String?
+  data            Json?
+  result          Json?
+  error           String?
+  scheduledFor    DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  nextRunAt       DateTime?
+  lastRunAt       DateTime?
+  runCount        Int        @default(0)
+  maxRuns         Int?
+  retryCount      Int        @default(0)
+  maxRetries      Int        @default(3)
+  priority        Int        @default(0)
+  tags            String[]   @default([])
+  runImmediately  Boolean    @default(false)
+
+  // Relations
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("JobCreator", fields: [createdById], references: [id])
+
+  // Audit fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([status])
+  @@index([nextRunAt])
+  @@index([priority])
+  @@index([tags])
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
 }
