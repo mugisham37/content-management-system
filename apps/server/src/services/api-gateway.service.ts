@@ -2,8 +2,7 @@ import { EventEmitter } from "events"
 import { logger } from "../utils/logger"
 import { ApiError } from "../utils/errors"
 import axios, { AxiosRequestConfig, AxiosResponse } from "axios"
-import { createHmac } from "crypto"
-import { VM } from "vm2"
+import { cacheService } from "./cache.service"
 
 // Define route types
 export enum RouteType {
@@ -700,6 +699,513 @@ export class ApiGatewayService extends EventEmitter {
             }
           }
 
-          // Prepare response headers
-          const responseHeaders = { ...response.headers }
-          if
+          // Prepare response headers - convert to string record
+          const responseHeaders: Record<string, string> = {}
+          Object.entries(response.headers).forEach(([key, value]) => {
+            if (value !== undefined) {
+              responseHeaders[key] = Array.isArray(value) ? value.join(', ') : String(value)
+            }
+          })
+          if (route.config.transformation?.responseHeaders) {
+            Object.assign(responseHeaders, route.config.transformation.responseHeaders)
+          }
+
+          // Calculate response size
+          const responseSize = JSON.stringify(responseData).length
+
+          return {
+            status: response.status,
+            headers: responseHeaders,
+            body: responseData,
+            duration: 0, // Will be set by caller
+            size: responseSize,
+            transformed: !!route.config.transformation?.response,
+          }
+        } catch (error) {
+          lastError = error
+          if (attempt === maxRetries - 1) {
+            throw error
+          }
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000))
+        }
+      }
+
+      throw lastError
+    } catch (error) {
+      logger.error(`Proxy route error for ${route.id}:`, error)
+      throw ApiError.internal("Proxy request failed")
+    }
+  }
+
+  /**
+   * Check rate limiting
+   */
+  private async checkRateLimit(context: RequestContext, route: Route): Promise<void> {
+    const { limit, window } = route.config.rateLimit!
+    const identifier = context.user?.id || context.headers['x-forwarded-for'] || 'anonymous'
+    const key = `${route.id}:${identifier}`
+    
+    const now = Date.now()
+    let rateLimitData = this.rateLimiters.get(key)
+
+    if (!rateLimitData || now > rateLimitData.resetTime) {
+      rateLimitData = {
+        requests: 1,
+        resetTime: now + window,
+      }
+      this.rateLimiters.set(key, rateLimitData)
+      return
+    }
+
+    if (rateLimitData.requests >= limit) {
+      throw ApiError.tooManyRequests(`Rate limit exceeded. Limit: ${limit} requests per ${window}ms`)
+    }
+
+    rateLimitData.requests++
+    this.rateLimiters.set(key, rateLimitData)
+  }
+
+  /**
+   * Check circuit breaker
+   */
+  private checkCircuitBreaker(route: Route): void {
+    const { threshold, timeout } = route.config.circuitBreaker!
+    const circuitBreaker = this.circuitBreakers.get(route.id)
+
+    if (!circuitBreaker) {
+      this.circuitBreakers.set(route.id, {
+        failures: 0,
+        lastFailureTime: 0,
+        state: "closed",
+      })
+      return
+    }
+
+    const now = Date.now()
+
+    switch (circuitBreaker.state) {
+      case "closed":
+        // Circuit is closed, allow requests
+        return
+      case "open":
+        // Check if we should transition to half-open
+        if (now - circuitBreaker.lastFailureTime > timeout) {
+          circuitBreaker.state = "half-open"
+          return
+        }
+        throw ApiError.serviceUnavailable("Circuit breaker is open")
+      case "half-open":
+        // Allow one request to test the service
+        return
+    }
+  }
+
+  /**
+   * Get cached response
+   */
+  private async getCachedResponse(context: RequestContext, route: Route): Promise<ResponseContext | null> {
+    try {
+      const cacheKey = this.generateCacheKey(context, route)
+      const cached = await cacheService.get<ResponseContext>(cacheKey, context.tenant?.id)
+      
+      if (cached) {
+        logger.debug(`Cache hit for route ${route.id}`, { cacheKey })
+        return cached
+      }
+
+      return null
+    } catch (error) {
+      logger.error(`Cache get error for route ${route.id}:`, error)
+      return null
+    }
+  }
+
+  /**
+   * Handle redirect route
+   */
+  private handleRedirectRoute(context: RequestContext, route: Route): ResponseContext {
+    const redirectUrl = route.target
+    
+    // Add query parameters to redirect URL if needed
+    const url = new URL(redirectUrl)
+    Object.entries(context.query).forEach(([key, value]) => {
+      url.searchParams.set(key, String(value))
+    })
+
+    return {
+      status: 302,
+      headers: {
+        'Location': url.toString(),
+        'Cache-Control': 'no-cache',
+      },
+      body: { redirect: url.toString() },
+      duration: 0,
+      size: JSON.stringify({ redirect: url.toString() }).length,
+    }
+  }
+
+  /**
+   * Handle function route
+   */
+  private async handleFunctionRoute(context: RequestContext, route: Route): Promise<ResponseContext> {
+    try {
+      // This is a placeholder for serverless function execution
+      // In a real implementation, this would invoke the actual function
+      const functionResult = {
+        success: true,
+        data: {
+          message: `Function executed for route ${route.id}`,
+          input: {
+            path: context.path,
+            method: context.method,
+            query: context.query,
+            body: context.body,
+          },
+          timestamp: new Date().toISOString(),
+        },
+      }
+
+      return {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: functionResult,
+        duration: 0,
+        size: JSON.stringify(functionResult).length,
+      }
+    } catch (error) {
+      logger.error(`Function route error for ${route.id}:`, error)
+      throw ApiError.internal("Function execution failed")
+    }
+  }
+
+  /**
+   * Handle mock route
+   */
+  private handleMockRoute(context: RequestContext, route: Route): ResponseContext {
+    const mockResponse = route.config.metadata?.mockResponse || {
+      message: `Mock response for ${route.name}`,
+      path: context.path,
+      method: context.method,
+      timestamp: new Date().toISOString(),
+    }
+
+    return {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Mock-Response': 'true',
+      },
+      body: mockResponse,
+      duration: 0,
+      size: JSON.stringify(mockResponse).length,
+    }
+  }
+
+  /**
+   * Handle webhook route
+   */
+  private async handleWebhookRoute(context: RequestContext, route: Route): Promise<ResponseContext> {
+    try {
+      // Validate webhook signature if configured
+      const webhookSecret = route.config.metadata?.webhookSecret
+      if (webhookSecret) {
+        const signature = context.headers['x-webhook-signature']
+        if (!signature || !this.validateWebhookSignature(context.body, signature, webhookSecret)) {
+          throw ApiError.unauthorized("Invalid webhook signature")
+        }
+      }
+
+      // Process webhook payload
+      const webhookResult = {
+        success: true,
+        message: "Webhook processed successfully",
+        payload: context.body,
+        timestamp: new Date().toISOString(),
+      }
+
+      // Emit webhook event for further processing
+      this.emit("webhook:received", {
+        route: route.id,
+        payload: context.body,
+        context,
+      })
+
+      return {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: webhookResult,
+        duration: 0,
+        size: JSON.stringify(webhookResult).length,
+      }
+    } catch (error) {
+      logger.error(`Webhook route error for ${route.id}:`, error)
+      throw error
+    }
+  }
+
+  /**
+   * Cache response
+   */
+  private async cacheResponse(context: RequestContext, route: Route, response: ResponseContext): Promise<void> {
+    try {
+      const { ttl } = route.config.caching!
+      const cacheKey = this.generateCacheKey(context, route)
+      
+      await cacheService.set(cacheKey, response, { ttl, namespace: context.tenant?.id })
+      logger.debug(`Response cached for route ${route.id}`, { cacheKey, ttl })
+    } catch (error) {
+      logger.error(`Cache set error for route ${route.id}:`, error)
+    }
+  }
+
+  /**
+   * Update metrics
+   */
+  private updateMetrics(route: Route, response: ResponseContext, duration: number): void {
+    try {
+      // Update general metrics
+      const requests = this.metrics.get("requests") || 0
+      this.metrics.set("requests", requests + 1)
+
+      const latencyArray = this.metrics.get("latency") || []
+      latencyArray.push(duration)
+      if (latencyArray.length > 1000) {
+        latencyArray.shift() // Keep only last 1000 entries
+      }
+      this.metrics.set("latency", latencyArray)
+
+      // Update route-specific metrics
+      const routeKey = `route:${route.id}`
+      const routeMetrics = this.metrics.get(routeKey) || {
+        requests: 0,
+        errors: 0,
+        totalDuration: 0,
+        avgDuration: 0,
+      }
+
+      routeMetrics.requests++
+      routeMetrics.totalDuration += duration
+      routeMetrics.avgDuration = routeMetrics.totalDuration / routeMetrics.requests
+
+      if (response.status >= 400) {
+        routeMetrics.errors++
+      }
+
+      this.metrics.set(routeKey, routeMetrics)
+
+      // Emit metrics event
+      this.emit("metrics:updated", {
+        route: route.id,
+        response: response.status,
+        duration,
+        timestamp: new Date(),
+      })
+    } catch (error) {
+      logger.error("Error updating metrics:", error)
+    }
+  }
+
+  /**
+   * Update circuit breaker on success
+   */
+  private updateCircuitBreakerSuccess(route: Route): void {
+    const circuitBreaker = this.circuitBreakers.get(route.id)
+    if (!circuitBreaker) return
+
+    if (circuitBreaker.state === "half-open") {
+      // Reset circuit breaker to closed state
+      circuitBreaker.state = "closed"
+      circuitBreaker.failures = 0
+      circuitBreaker.lastFailureTime = 0
+    }
+  }
+
+  /**
+   * Update circuit breaker on failure
+   */
+  private updateCircuitBreakerFailure(route: Route): void {
+    const { threshold } = route.config.circuitBreaker!
+    let circuitBreaker = this.circuitBreakers.get(route.id)
+
+    if (!circuitBreaker) {
+      circuitBreaker = {
+        failures: 0,
+        lastFailureTime: 0,
+        state: "closed",
+      }
+      this.circuitBreakers.set(route.id, circuitBreaker)
+    }
+
+    circuitBreaker.failures++
+    circuitBreaker.lastFailureTime = Date.now()
+
+    if (circuitBreaker.failures >= threshold) {
+      circuitBreaker.state = "open"
+      logger.warn(`Circuit breaker opened for route ${route.id}`, {
+        failures: circuitBreaker.failures,
+        threshold,
+      })
+    }
+  }
+
+  /**
+   * Update error metrics
+   */
+  private updateErrorMetrics(route: Route | undefined, error: any, duration: number): void {
+    try {
+      // Update general error metrics
+      const errors = this.metrics.get("errors") || 0
+      this.metrics.set("errors", errors + 1)
+
+      // Update route-specific error metrics
+      if (route) {
+        const routeKey = `route:${route.id}`
+        const routeMetrics = this.metrics.get(routeKey) || {
+          requests: 0,
+          errors: 0,
+          totalDuration: 0,
+          avgDuration: 0,
+        }
+
+        routeMetrics.errors++
+        this.metrics.set(routeKey, routeMetrics)
+      }
+
+      // Emit error event
+      this.emit("error:occurred", {
+        route: route?.id,
+        error: error.message,
+        duration,
+        timestamp: new Date(),
+      })
+    } catch (err) {
+      logger.error("Error updating error metrics:", err)
+    }
+  }
+
+  /**
+   * Generate cache key
+   */
+  private generateCacheKey(context: RequestContext, route: Route): string {
+    const varyBy = route.config.caching?.varyBy || []
+    const keyParts = [
+      `route:${route.id}`,
+      `path:${context.path}`,
+      `method:${context.method}`,
+    ]
+
+    // Add vary-by headers to cache key
+    varyBy.forEach(header => {
+      const value = context.headers[header.toLowerCase()]
+      if (value) {
+        keyParts.push(`${header}:${value}`)
+      }
+    })
+
+    // Add query parameters to cache key
+    const queryString = new URLSearchParams(context.query).toString()
+    if (queryString) {
+      keyParts.push(`query:${queryString}`)
+    }
+
+    return keyParts.join("|")
+  }
+
+  /**
+   * Validate webhook signature
+   */
+  private validateWebhookSignature(payload: any, signature: string, secret: string): boolean {
+    try {
+      // This is a basic implementation - in production, use proper HMAC validation
+      const crypto = require('crypto')
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(JSON.stringify(payload))
+        .digest('hex')
+      
+      return signature === `sha256=${expectedSignature}`
+    } catch (error) {
+      logger.error("Error validating webhook signature:", error)
+      return false
+    }
+  }
+
+  /**
+   * Get service health status
+   */
+  public getHealthStatus(): {
+    status: string
+    routes: number
+    activeRoutes: number
+    metrics: any
+  } {
+    const activeRoutes = Array.from(this.routes.values()).filter(
+      route => route.status === RouteStatus.ACTIVE
+    ).length
+
+    return {
+      status: "healthy",
+      routes: this.routes.size,
+      activeRoutes,
+      metrics: Object.fromEntries(this.metrics),
+    }
+  }
+
+  /**
+   * Get route by ID
+   */
+  public getRoute(id: string): Route | undefined {
+    return this.routes.get(id)
+  }
+
+  /**
+   * Get all routes
+   */
+  public getAllRoutes(): Route[] {
+    return Array.from(this.routes.values())
+  }
+
+  /**
+   * Add or update route
+   */
+  public addRoute(route: Route): void {
+    this.addRouteToCache(route)
+    logger.info(`Route ${route.id} added/updated`)
+  }
+
+  /**
+   * Remove route
+   */
+  public removeRoute(id: string): boolean {
+    const route = this.routes.get(id)
+    if (!route) return false
+
+    this.routes.delete(id)
+    
+    // Remove from pattern routes
+    const pattern = this.getRoutePattern(route.path)
+    const patternRoutes = this.routePatterns.get(pattern)
+    if (patternRoutes) {
+      const index = patternRoutes.findIndex(r => r.id === id)
+      if (index !== -1) {
+        patternRoutes.splice(index, 1)
+        if (patternRoutes.length === 0) {
+          this.routePatterns.delete(pattern)
+        }
+      }
+    }
+
+    // Clean up related data
+    this.circuitBreakers.delete(id)
+    this.healthChecks.delete(id)
+    this.metrics.delete(`route:${id}`)
+
+    logger.info(`Route ${id} removed`)
+    return true
+  }
+}
