@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express"
 import type { ObjectSchema } from "joi"
 import { ApiError } from "../utils/errors"
-import { logger } from "../utils/logger"
+import { Logger } from "../utils/logger"
 
 export interface ValidationOptions {
   body?: ObjectSchema
@@ -103,7 +103,7 @@ export class ValidationMiddleware {
 
         // If there are validation errors, return them
         if (errors.length > 0) {
-          logger.warn("Request validation failed", {
+          Logger.warn("Request validation failed", {
             errors,
             path: req.path,
             method: req.method,
@@ -115,7 +115,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("Validation middleware error:", error, { requestId })
+        Logger.error("Validation middleware error:", { error, requestId })
         next(new ApiError(500, "Validation processing error", "VALIDATION_PROCESSING_ERROR"))
       }
     }
@@ -175,7 +175,7 @@ export class ValidationMiddleware {
 
           // Basic security checks
           if (this.isExecutableFile(uploadedFile.originalname)) {
-            logger.security("Executable file upload attempt blocked", {
+            Logger.logSecurity("Executable file upload attempt blocked", {
               filename: uploadedFile.originalname,
               mimetype: uploadedFile.mimetype,
               requestId,
@@ -187,7 +187,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("File validation error:", error, { requestId })
+        Logger.error("File validation error:", { error, requestId })
         next(new ApiError(500, "File validation error", "FILE_VALIDATION_ERROR"))
       }
     }
@@ -233,7 +233,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("Pagination validation error:", error)
+        Logger.error("Pagination validation error:", error)
         next(new ApiError(400, "Invalid pagination parameters", "INVALID_PAGINATION"))
       }
     }
@@ -268,7 +268,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("Sorting validation error:", error)
+        Logger.error("Sorting validation error:", error)
         next(new ApiError(400, "Invalid sorting parameters", "INVALID_SORTING"))
       }
     }
@@ -319,7 +319,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("Search validation error:", error)
+        Logger.error("Search validation error:", error)
         next(new ApiError(400, "Invalid search parameters", "INVALID_SEARCH"))
       }
     }
@@ -382,7 +382,7 @@ export class ValidationMiddleware {
 
         next()
       } catch (error) {
-        logger.error("Date range validation error:", error)
+        Logger.error("Date range validation error:", error)
         next(new ApiError(400, "Invalid date range parameters", "INVALID_DATE_RANGE"))
       }
     }
@@ -443,7 +443,7 @@ export class ValidationMiddleware {
 
       next()
     } catch (error) {
-      logger.error("Input sanitization error:", error)
+      Logger.error("Input sanitization error:", error)
       next(new ApiError(500, "Input sanitization error", "SANITIZATION_ERROR"))
     }
   }
@@ -460,5 +460,4 @@ export const validateSearch = validationMiddleware.validateSearch
 export const validateDateRange = validationMiddleware.validateDateRange
 export const sanitizeInput = validationMiddleware.sanitizeInput
 
-// Export class for advanced usage
-export { ValidationMiddleware }
+// Export class for advanced usage (already exported at class declaration)
