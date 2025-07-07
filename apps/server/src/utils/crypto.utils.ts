@@ -7,6 +7,21 @@ import * as bcrypt from 'bcryptjs'
 
 export class CryptoUtils {
   /**
+   * Hash a password using bcrypt
+   */
+  static async hashPassword(password: string): Promise<string> {
+    const saltRounds = 12
+    return bcrypt.hash(password, saltRounds)
+  }
+
+  /**
+   * Verify a password against a hash
+   */
+  static async comparePassword(password: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(password, hash)
+  }
+
+  /**
    * Generate a secure API key
    */
   static generateApiKey(): string {
@@ -49,4 +64,29 @@ export class CryptoUtils {
     const expectedSignature = this.createHmacSignature(data, secret)
     return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
   }
+
+  /**
+   * Generate a random token
+   */
+  static generateToken(length: number = 32): string {
+    return crypto.randomBytes(length).toString('hex')
+  }
+
+  /**
+   * Generate a UUID
+   */
+  static generateUUID(): string {
+    return crypto.randomUUID()
+  }
+
+  /**
+   * Hash data using SHA-256
+   */
+  static sha256(data: string): string {
+    return crypto.createHash('sha256').update(data).digest('hex')
+  }
 }
+
+// Export convenience functions for backward compatibility
+export const hashPassword = CryptoUtils.hashPassword
+export const comparePassword = CryptoUtils.comparePassword

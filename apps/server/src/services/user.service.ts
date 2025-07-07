@@ -1,14 +1,34 @@
 import { prisma } from "@cms-platform/database/client"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
-import { hashPassword, comparePassword } from "../utils/crypto"
-import type { User } from "@cms-platform/database/types"
+import { hashPassword, comparePassword } from "../utils/crypto.utils"
+import { EnumUtils } from "../utils/enum.utils"
+import { User, UserRole, UserStatus } from "@prisma/client"
 
-export enum UserStatus {
-  ACTIVE = "ACTIVE",
-  INACTIVE = "INACTIVE",
-  SUSPENDED = "SUSPENDED",
-  PENDING = "PENDING",
+// Define a proper user return type that matches what we actually select
+type UserWithoutPassword = {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  avatar: string | null
+  role: UserRole
+  status: UserStatus
+  emailVerified: boolean
+  lastLoginAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+  deletedAt?: Date | null
+  tenant?: {
+    id: string
+    name: string
+    slug: string
+  } | null
+  sessions?: any[]
+  _count?: {
+    sessions: number
+    auditLogs: number
+  }
 }
 
 export class UserService {
@@ -32,7 +52,7 @@ export class UserService {
       includeDeleted?: boolean
     } = {},
   ): Promise<{
-    users: Omit<User, "password">[]
+    users: UserWithoutPassword[]
     total: number
     page: number
     limit: number
@@ -91,9 +111,7 @@ export class UserService {
       }
 
       if (tenantId) {
-        where.tenantUsers = {
-          some: { tenantId },
-        }
+        where.tenantId = tenantId
       }
 
       if (createdAfter || createdBefore) {
@@ -125,15 +143,11 @@ export class UserService {
             status: true,
             avatar: true,
             lastLoginAt: true,
-            emailVerifiedAt: true,
+            emailVerified: true,
             createdAt: true,
             updatedAt: true,
-            tenantUsers: {
-              include: {
-                tenant: {
-                  select: { id: true, name: true, slug: true },
-                },
-              },
+            tenant: {
+              select: { id: true, name: true, slug: true },
             },
             _count: {
               select: {
@@ -173,7 +187,7 @@ export class UserService {
       )
 
       return {
-        users: users as Omit<User, "password">[],
+        users: users as UserWithoutPassword[],
         total,
         page,
         limit,
@@ -194,7 +208,7 @@ export class UserService {
   /**
    * Get user by ID
    */
-  public async getUserById(id: string, includeDeleted = false): Promise<Omit<User, "password">> {
+  public async getUserById(id: string, includeDeleted = false): Promise<UserWithoutPassword> {
     try {
       const user = await prisma.user.findFirst({
         where: {
@@ -210,20 +224,15 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
           deletedAt: true,
-          tenantUsers: {
-            include: {
-              tenant: {
-                select: { id: true, name: true, slug: true },
-              },
-            },
+          tenant: {
+            select: { id: true, name: true, slug: true },
           },
           sessions: {
-            where: { expiresAt: { gt: new Date() } },
-            orderBy: { createdAt: "desc" },
+            where: { expires: { gt: new Date() } },
             take: 5,
           },
           _count: {
@@ -239,7 +248,7 @@ export class UserService {
         throw ApiError.notFound(`User not found with ID: ${id}`)
       }
 
-      return user as Omit<User, "password">
+      return user as UserWithoutPassword
     } catch (error) {
       logger.error(`Error getting user by ID ${id}:`, error)
       throw error
@@ -249,7 +258,7 @@ export class UserService {
   /**
    * Get user by email
    */
-  public async getUserByEmail(email: string, includePassword = false): Promise<User | Omit<User, "password">> {
+  public async getUserByEmail(email: string, includePassword = false): Promise<User | UserWithoutPassword> {
     try {
       const user = await prisma.user.findFirst({
         where: {
@@ -265,16 +274,12 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
           password: includePassword,
-          tenantUsers: {
-            include: {
-              tenant: {
-                select: { id: true, name: true, slug: true },
-              },
-            },
+          tenant: {
+            select: { id: true, name: true, slug: true },
           },
         },
       })
@@ -283,7 +288,7 @@ export class UserService {
         throw ApiError.notFound(`User not found with email: ${email}`)
       }
 
-      return user as User | Omit<User, "password">
+      return user as User | UserWithoutPassword
     } catch (error) {
       logger.error(`Error getting user by email ${email}:`, error)
       throw error
@@ -303,7 +308,7 @@ export class UserService {
     avatar?: string
     tenantId?: string
     skipEmailVerification?: boolean
-  }): Promise<Omit<User, "password">> {
+  }): Promise<UserWithoutPassword> {
     try {
       const {
         email,
@@ -332,50 +337,43 @@ export class UserService {
       // Hash password
       const hashedPassword = await hashPassword(password)
 
-      // Create user with transaction
-      const user = await prisma.$transaction(async (tx) => {
-        const newUser = await tx.user.create({
-          data: {
-            email: email.toLowerCase(),
-            password: hashedPassword,
-            firstName,
-            lastName,
-            role,
-            status: skipEmailVerification ? "ACTIVE" : status,
-            avatar,
-            emailVerifiedAt: skipEmailVerification ? new Date() : null,
-          },
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            role: true,
-            status: true,
-            avatar: true,
-            lastLoginAt: true,
-            emailVerifiedAt: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        })
+      // Convert enum values safely
+      const userRole = EnumUtils.toUserRoleWithDefault(role, UserRole.VIEWER)
+      const userStatus = EnumUtils.toUserStatusWithDefault(
+        skipEmailVerification ? "ACTIVE" : status,
+        UserStatus.PENDING
+      )
 
-        // Add to tenant if specified
-        if (tenantId) {
-          await tx.tenantUser.create({
-            data: {
-              tenantId,
-              userId: newUser.id,
-              role: role === "SUPER_ADMIN" ? "OWNER" : "VIEWER",
-            },
-          })
-        }
-
-        return newUser
+      // Create user
+      const user = await prisma.user.create({
+        data: {
+          email: email.toLowerCase(),
+          password: hashedPassword,
+          firstName,
+          lastName,
+          role: userRole,
+          status: userStatus,
+          avatar,
+          emailVerified: skipEmailVerification,
+          tenantId,
+        },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          role: true,
+          status: true,
+          avatar: true,
+          lastLoginAt: true,
+          emailVerified: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       })
 
       logger.info(`Created user: ${user.email} (${user.id})`)
-      return user as Omit<User, "password">
+      return user as UserWithoutPassword
     } catch (error) {
       logger.error("Error creating user:", error)
       throw error
@@ -395,7 +393,7 @@ export class UserService {
       status?: string
       avatar?: string
     },
-  ): Promise<Omit<User, "password">> {
+  ): Promise<UserWithoutPassword> {
     try {
       // Check if user exists
       const existingUser = await prisma.user.findFirst({
@@ -421,14 +419,22 @@ export class UserService {
         }
       }
 
+      // Prepare update data with enum conversions
+      const updateData: any = {
+        updatedAt: new Date(),
+      }
+
+      if (data.email) updateData.email = data.email.toLowerCase()
+      if (data.firstName) updateData.firstName = data.firstName
+      if (data.lastName) updateData.lastName = data.lastName
+      if (data.avatar) updateData.avatar = data.avatar
+      if (data.role) updateData.role = EnumUtils.toUserRole(data.role)
+      if (data.status) updateData.status = EnumUtils.toUserStatus(data.status)
+
       // Update user
       const updatedUser = await prisma.user.update({
         where: { id },
-        data: {
-          ...data,
-          email: data.email?.toLowerCase(),
-          updatedAt: new Date(),
-        },
+        data: updateData,
         select: {
           id: true,
           email: true,
@@ -438,21 +444,17 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
-          tenantUsers: {
-            include: {
-              tenant: {
-                select: { id: true, name: true, slug: true },
-              },
-            },
+          tenant: {
+            select: { id: true, name: true, slug: true },
           },
         },
       })
 
       logger.info(`Updated user: ${updatedUser.email} (${updatedUser.id})`)
-      return updatedUser as Omit<User, "password">
+      return updatedUser as UserWithoutPassword
     } catch (error) {
       logger.error(`Error updating user ${id}:`, error)
       throw error
@@ -478,9 +480,6 @@ export class UserService {
           // Delete user sessions
           await tx.session.deleteMany({ where: { userId: id } })
 
-          // Delete tenant user relationships
-          await tx.tenantUser.deleteMany({ where: { userId: id } })
-
           // Delete user
           await tx.user.delete({ where: { id } })
         })
@@ -495,7 +494,7 @@ export class UserService {
             where: { id },
             data: {
               deletedAt: new Date(),
-              status: "INACTIVE",
+              status: UserStatus.INACTIVE,
             },
           })
         })
@@ -511,7 +510,7 @@ export class UserService {
   /**
    * Restore soft deleted user
    */
-  public async restoreUser(id: string): Promise<Omit<User, "password">> {
+  public async restoreUser(id: string): Promise<UserWithoutPassword> {
     try {
       const user = await prisma.user.findFirst({
         where: { id, deletedAt: { not: null } },
@@ -525,7 +524,7 @@ export class UserService {
         where: { id },
         data: {
           deletedAt: null,
-          status: "ACTIVE",
+          status: UserStatus.ACTIVE,
           updatedAt: new Date(),
         },
         select: {
@@ -537,14 +536,14 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
         },
       })
 
       logger.info(`Restored user: ${restoredUser.email} (${restoredUser.id})`)
-      return restoredUser as Omit<User, "password">
+      return restoredUser as UserWithoutPassword
     } catch (error) {
       logger.error(`Error restoring user ${id}:`, error)
       throw error
@@ -598,12 +597,14 @@ export class UserService {
   /**
    * Update user status
    */
-  public async updateUserStatus(id: string, status: string): Promise<Omit<User, "password">> {
+  public async updateUserStatus(id: string, status: string): Promise<UserWithoutPassword> {
     try {
+      const userStatus = EnumUtils.toUserStatus(status)
+
       const user = await prisma.user.update({
         where: { id },
         data: {
-          status,
+          status: userStatus,
           updatedAt: new Date(),
         },
         select: {
@@ -615,14 +616,14 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
         },
       })
 
       // If suspending user, invalidate all sessions
-      if (status === "SUSPENDED") {
+      if (userStatus === UserStatus.SUSPENDED) {
         await prisma.session.deleteMany({ where: { userId: id } })
       }
 
@@ -639,10 +640,12 @@ export class UserService {
    */
   public async updateUserRole(id: string, role: string): Promise<Omit<User, "password">> {
     try {
+      const userRole = EnumUtils.toUserRole(role)
+
       const user = await prisma.user.update({
         where: { id },
         data: {
-          role,
+          role: userRole,
           updatedAt: new Date(),
         },
         select: {
@@ -654,7 +657,7 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -676,8 +679,8 @@ export class UserService {
       const user = await prisma.user.update({
         where: { id },
         data: {
-          emailVerifiedAt: new Date(),
-          status: "ACTIVE",
+          emailVerified: true,
+          status: UserStatus.ACTIVE,
           updatedAt: new Date(),
         },
         select: {
@@ -689,7 +692,7 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -751,9 +754,7 @@ export class UserService {
       }
 
       if (tenantId) {
-        where.tenantUsers = {
-          some: { tenantId },
-        }
+        where.tenantId = tenantId
       }
 
       const users = await prisma.user.findMany({
@@ -772,7 +773,7 @@ export class UserService {
           status: true,
           avatar: true,
           lastLoginAt: true,
-          emailVerifiedAt: true,
+          emailVerified: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -796,15 +797,23 @@ export class UserService {
     },
   ): Promise<number> {
     try {
+      const updateData: any = {
+        updatedAt: new Date(),
+      }
+
+      if (data.role) {
+        updateData.role = EnumUtils.toUserRole(data.role)
+      }
+      if (data.status) {
+        updateData.status = EnumUtils.toUserStatus(data.status)
+      }
+
       const result = await prisma.user.updateMany({
         where: {
           id: { in: userIds },
           deletedAt: null,
         },
-        data: {
-          ...data,
-          updatedAt: new Date(),
-        },
+        data: updateData,
       })
 
       logger.info(`Bulk updated ${result.count} users`)
@@ -826,12 +835,11 @@ export class UserService {
     lastLogin: Date | null
     sessionCount: number
     auditLogCount: number
-    tenantCount: number
   }> {
     try {
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
 
-      const [user, sessionCount, auditLogCount, tenantCount] = await Promise.all([
+      const [user, sessionCount, auditLogCount] = await Promise.all([
         prisma.user.findUnique({
           where: { id: userId },
           select: { lastLoginAt: true },
@@ -839,7 +847,7 @@ export class UserService {
         prisma.session.count({
           where: {
             userId,
-            createdAt: { gte: since },
+            expires: { gte: since },
           },
         }),
         prisma.auditLog.count({
@@ -847,9 +855,6 @@ export class UserService {
             userId,
             createdAt: { gte: since },
           },
-        }),
-        prisma.tenantUser.count({
-          where: { userId },
         }),
       ])
 
@@ -862,10 +867,48 @@ export class UserService {
         lastLogin: user.lastLoginAt,
         sessionCount,
         auditLogCount,
-        tenantCount,
       }
     } catch (error) {
       logger.error(`Error getting user activity for ${userId}:`, error)
+      throw error
+    }
+  }
+
+  /**
+   * Get user sessions
+   */
+  public async getUserSessions(userId: string): Promise<any[]> {
+    try {
+      return await prisma.session.findMany({
+        where: {
+          userId,
+          expires: { gt: new Date() },
+        },
+        orderBy: {
+          expires: "desc",
+        },
+      })
+    } catch (error) {
+      logger.error(`Error getting user sessions for ${userId}:`, error)
+      throw error
+    }
+  }
+
+  /**
+   * Clean up expired sessions
+   */
+  public async cleanupExpiredSessions(): Promise<number> {
+    try {
+      const result = await prisma.session.deleteMany({
+        where: {
+          expires: { lt: new Date() },
+        },
+      })
+
+      logger.info(`Cleaned up ${result.count} expired sessions`)
+      return result.count
+    } catch (error) {
+      logger.error("Error cleaning up expired sessions:", error)
       throw error
     }
   }
