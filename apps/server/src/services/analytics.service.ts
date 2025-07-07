@@ -54,6 +54,36 @@ export class AnalyticsService {
   }
 
   /**
+   * Extract title from JSONB data field
+   */
+  private extractTitleFromData(data: any): string {
+    if (!data || typeof data !== 'object') {
+      return 'Untitled'
+    }
+    return data.title || data.name || data.heading || 'Untitled'
+  }
+
+  /**
+   * Extract size from media metadata
+   */
+  private extractSizeFromMetadata(metadata: any): number {
+    if (!metadata || typeof metadata !== 'object') {
+      return 0
+    }
+    return metadata.size || metadata.fileSize || 0
+  }
+
+  /**
+   * Extract mime type from media metadata
+   */
+  private extractMimeTypeFromMetadata(metadata: any): string {
+    if (!metadata || typeof metadata !== 'object') {
+      return 'unknown'
+    }
+    return metadata.mimeType || metadata.contentType || 'unknown'
+  }
+
+  /**
    * Get system overview statistics with caching
    */
   async getSystemOverview(): Promise<SystemOverview> {
@@ -105,7 +135,7 @@ export class AnalyticsService {
         prisma.content.groupBy({
           by: ['status'],
           _count: {
-            status: true,
+            id: true, // Count by id instead of status
           },
         }),
 
@@ -115,7 +145,7 @@ export class AnalyticsService {
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true,
-            title: true,
+            data: true, // Use data field instead of title
             status: true,
             updatedAt: true,
             updatedBy: {
@@ -133,13 +163,22 @@ export class AnalyticsService {
       // Format status counts
       const formattedStatusCounts: Record<string, number> = {}
       statusCounts.forEach((item) => {
-        formattedStatusCounts[item.status] = item._count.status
+        formattedStatusCounts[item.status] = item._count.id || 0
       })
+
+      // Extract title from JSONB data and format recent activity
+      const formattedRecentActivity = recentActivity.map((item) => ({
+        id: item.id,
+        title: this.extractTitleFromData(item.data),
+        status: item.status,
+        updatedAt: item.updatedAt,
+        updatedBy: item.updatedBy,
+      }))
 
       return {
         totalCount,
         byStatus: formattedStatusCounts,
-        recentActivity,
+        recentActivity: formattedRecentActivity,
       }
     } catch (error) {
       logger.error("Error getting content stats:", error)
@@ -152,22 +191,15 @@ export class AnalyticsService {
    */
   async getMediaStats(): Promise<MediaStats> {
     try {
-      const [totalCount, typeCounts, totalSizeResult, recentUploads] = await Promise.all([
+      const [totalCount, typeCounts, recentUploads] = await Promise.all([
         // Total count
         prisma.media.count(),
 
-        // Count by type
+        // Count by type (using existing 'type' field)
         prisma.media.groupBy({
-          by: ['mimeType'],
+          by: ['type'],
           _count: {
-            mimeType: true,
-          },
-        }),
-
-        // Total size aggregation
-        prisma.media.aggregate({
-          _sum: {
-            size: true,
+            id: true, // Count by id instead of type
           },
         }),
 
@@ -178,10 +210,10 @@ export class AnalyticsService {
           select: {
             id: true,
             filename: true,
-            mimeType: true,
-            size: true,
+            type: true, // Use type instead of mimeType
+            metadata: true, // Get metadata for size and mimeType extraction
             createdAt: true,
-            createdBy: {
+            uploadedBy: { // Use uploadedBy instead of createdBy
               select: {
                 id: true,
                 firstName: true,
@@ -193,18 +225,35 @@ export class AnalyticsService {
         }),
       ])
 
-      // Format type counts by extracting main type from mimeType
+      // Format type counts
       const formattedTypeCounts: Record<string, number> = {}
       typeCounts.forEach((item) => {
-        const mainType = item.mimeType?.split('/')[0] || 'unknown'
-        formattedTypeCounts[mainType] = (formattedTypeCounts[mainType] || 0) + item._count.mimeType
+        formattedTypeCounts[item.type] = item._count.id || 0
+      })
+
+      // Calculate total size from metadata and format recent uploads
+      let totalSize = 0
+      const formattedRecentUploads = recentUploads.map((item) => {
+        const size = this.extractSizeFromMetadata(item.metadata)
+        const mimeType = this.extractMimeTypeFromMetadata(item.metadata)
+        totalSize += size
+        
+        return {
+          id: item.id,
+          filename: item.filename,
+          type: item.type,
+          mimeType,
+          size,
+          createdAt: item.createdAt,
+          uploadedBy: item.uploadedBy,
+        }
       })
 
       return {
         totalCount,
         byType: formattedTypeCounts,
-        totalSize: totalSizeResult._sum.size || 0,
-        recentUploads,
+        totalSize,
+        recentUploads: formattedRecentUploads,
       }
     } catch (error) {
       logger.error("Error getting media stats:", error)
@@ -240,19 +289,19 @@ export class AnalyticsService {
         // Recent logins
         prisma.user.findMany({
           where: {
-            lastLogin: {
+            lastLoginAt: {
               not: null,
             },
           },
           take: 10,
-          orderBy: { lastLogin: 'desc' },
+          orderBy: { lastLoginAt: 'desc' },
           select: {
             id: true,
             email: true,
             firstName: true,
             lastName: true,
             role: true,
-            lastLogin: true,
+            lastLoginAt: true,
           },
         }),
       ])
@@ -364,7 +413,7 @@ export class AnalyticsService {
             content: {
               select: {
                 id: true,
-                title: true,
+                data: true, // Use data field instead of title
               },
             },
           },
@@ -529,20 +578,34 @@ export class AnalyticsService {
    */
   async getMediaTypeDistribution(): Promise<Array<{ type: string; count: number; totalSize: number }>> {
     try {
-      const results = await prisma.media.groupBy({
-        by: ['mimeType'],
-        _count: {
-          mimeType: true,
-        },
-        _sum: {
-          size: true,
+      // Get all media with metadata to extract size and mimeType information
+      const mediaItems = await prisma.media.findMany({
+        select: {
+          type: true,
+          metadata: true,
         },
       })
 
-      return results.map((item) => ({
-        type: item.mimeType?.split('/')[0] || 'unknown',
-        count: item._count.mimeType,
-        totalSize: item._sum.size || 0,
+      // Process the data to group by type and calculate totals
+      const typeMap = new Map<string, { count: number; totalSize: number }>()
+
+      mediaItems.forEach((item) => {
+        const type = item.type
+        const size = this.extractSizeFromMetadata(item.metadata)
+        
+        if (!typeMap.has(type)) {
+          typeMap.set(type, { count: 0, totalSize: 0 })
+        }
+        
+        const current = typeMap.get(type)!
+        current.count += 1
+        current.totalSize += size
+      })
+
+      return Array.from(typeMap.entries()).map(([type, data]) => ({
+        type,
+        count: data.count,
+        totalSize: data.totalSize,
       }))
     } catch (error) {
       logger.error("Error getting media type distribution:", error)
