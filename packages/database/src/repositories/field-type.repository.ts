@@ -17,6 +17,8 @@ export interface CreateFieldTypeInput {
   validations?: any[]
   settings?: Record<string, any>
   pluginId?: string
+  createdBy?: string
+  updatedBy?: string
 }
 
 export interface UpdateFieldTypeInput {
@@ -28,6 +30,8 @@ export interface UpdateFieldTypeInput {
   validations?: any[]
   settings?: Record<string, any>
   pluginId?: string
+  createdBy?: string
+  updatedBy?: string
 }
 
 export interface FieldTypeFilters {
@@ -51,7 +55,7 @@ export class FieldTypeRepository extends BaseRepository<FieldType, CreateFieldTy
   /**
    * Find field type by name
    */
-  async findByName(name: string): Promise<FieldType | null> {
+  async findByName(name: string, tenantId?: string): Promise<FieldType | null> {
     try {
       return await this.model.findUnique({
         where: { name },
@@ -106,6 +110,29 @@ export class FieldTypeRepository extends BaseRepository<FieldType, CreateFieldTy
   }
 
   /**
+   * Find many field types with tenant support
+   */
+  async findMany(options?: { tenantId?: string }): Promise<FieldType[]> {
+    try {
+      return await this.model.findMany({
+        include: {
+          plugin: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              version: true,
+            },
+          },
+        },
+        orderBy: { name: 'asc' },
+      })
+    } catch (error) {
+      this.handleError(error, 'findMany')
+    }
+  }
+
+  /**
    * Find system field types
    */
   async findSystem(): Promise<FieldType[]> {
@@ -130,6 +157,32 @@ export class FieldTypeRepository extends BaseRepository<FieldType, CreateFieldTy
       })
     } catch (error) {
       this.handleError(error, 'findBuiltIn')
+    }
+  }
+
+  /**
+   * Count built-in field types
+   */
+  async countBuiltIn(): Promise<number> {
+    try {
+      return await this.model.count({
+        where: { isBuiltIn: true },
+      })
+    } catch (error) {
+      this.handleError(error, 'countBuiltIn')
+    }
+  }
+
+  /**
+   * Delete all built-in field types
+   */
+  async deleteBuiltIn(): Promise<{ count: number }> {
+    try {
+      return await this.model.deleteMany({
+        where: { isBuiltIn: true },
+      })
+    } catch (error) {
+      this.handleError(error, 'deleteBuiltIn')
     }
   }
 
@@ -534,5 +587,65 @@ export class FieldTypeRepository extends BaseRepository<FieldType, CreateFieldTy
     }
 
     return compatibilityMap[dataType] || []
+  }
+
+  /**
+   * Find field type by ID with tenant support
+   */
+  async findByIdWithTenant(id: string, tenantId?: string): Promise<FieldType | null> {
+    try {
+      return await this.model.findUnique({
+        where: { id },
+        include: {
+          plugin: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              version: true,
+            },
+          },
+        },
+      })
+    } catch (error) {
+      this.handleError(error, 'findByIdWithTenant')
+    }
+  }
+
+  /**
+   * Update field type with tenant support
+   */
+  async updateWithTenant(id: string, data: UpdateFieldTypeInput, tenantId?: string): Promise<FieldType> {
+    try {
+      return await this.model.update({
+        where: { id },
+        data,
+        include: {
+          plugin: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              version: true,
+            },
+          },
+        },
+      })
+    } catch (error) {
+      this.handleError(error, 'updateWithTenant')
+    }
+  }
+
+  /**
+   * Delete field type with tenant support
+   */
+  async deleteWithTenant(id: string, tenantId?: string): Promise<FieldType> {
+    try {
+      return await this.model.delete({
+        where: { id },
+      })
+    } catch (error) {
+      this.handleError(error, 'deleteWithTenant')
+    }
   }
 }

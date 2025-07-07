@@ -1,55 +1,9 @@
 import { FieldTypeRepository } from "@cms-platform/database/repositories/field-type.repository"
+import { PrismaClient, FieldDataType, FieldUIType } from "@prisma/client"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
 import { AuditService } from "./audit.service"
-import type { FieldType } from "@cms-platform/database/src/types"
-
-export enum FieldDataType {
-  STRING = "string",
-  TEXT = "text",
-  RICH_TEXT = "richText",
-  NUMBER = "number",
-  INTEGER = "integer",
-  FLOAT = "float",
-  BOOLEAN = "boolean",
-  DATE = "date",
-  DATETIME = "datetime",
-  EMAIL = "email",
-  URL = "url",
-  IMAGE = "image",
-  FILE = "file",
-  REFERENCE = "reference",
-  JSON = "json",
-  ARRAY = "array",
-  COMPONENT = "component",
-  ENUM = "enum",
-  COLOR = "color",
-  GEO_POINT = "geoPoint",
-  RELATION = "relation",
-}
-
-export enum FieldUIType {
-  TEXT_INPUT = "textInput",
-  TEXT_AREA = "textArea",
-  RICH_TEXT_EDITOR = "richTextEditor",
-  NUMBER_INPUT = "numberInput",
-  TOGGLE = "toggle",
-  DATE_PICKER = "datePicker",
-  DATE_TIME_PICKER = "dateTimePicker",
-  EMAIL_INPUT = "emailInput",
-  URL_INPUT = "urlInput",
-  IMAGE_UPLOADER = "imageUploader",
-  FILE_UPLOADER = "fileUploader",
-  REFERENCE_SELECTOR = "referenceSelector",
-  JSON_EDITOR = "jsonEditor",
-  ARRAY_EDITOR = "arrayEditor",
-  COMPONENT_EDITOR = "componentEditor",
-  SELECT = "select",
-  COLOR_PICKER = "colorPicker",
-  MAP = "map",
-  RELATION_EDITOR = "relationEditor",
-}
 
 export interface FieldValidation {
   required?: boolean
@@ -73,8 +27,8 @@ export class FieldTypeService {
   private auditService: AuditService
   private options: FieldTypeServiceOptions
 
-  constructor(options: FieldTypeServiceOptions = {}) {
-    this.fieldTypeRepo = new FieldTypeRepository()
+  constructor(prisma: PrismaClient, options: FieldTypeServiceOptions = {}) {
+    this.fieldTypeRepo = new FieldTypeRepository(prisma)
     this.auditService = new AuditService()
     this.options = {
       enableCache: true,
@@ -432,7 +386,7 @@ export class FieldTypeService {
    */
   public async getFieldTypeById(id: string, tenantId?: string): Promise<any> {
     try {
-      const fieldType = await this.fieldTypeRepo.findById(id, tenantId)
+      const fieldType = await this.fieldTypeRepo.findByIdWithTenant(id, tenantId)
       if (!fieldType) {
         throw ApiError.notFound("Field type not found")
       }
@@ -488,6 +442,7 @@ export class FieldTypeService {
       // Create field type
       const fieldType = await this.fieldTypeRepo.create({
         ...data,
+        validations: data.validations ? [data.validations] : undefined,
         isSystem: false,
         isBuiltIn: false,
         createdBy: userId,
@@ -553,8 +508,9 @@ export class FieldTypeService {
       }
 
       // Update field type
-      const updatedFieldType = await this.fieldTypeRepo.update(id, {
+      const updatedFieldType = await this.fieldTypeRepo.updateWithTenant(id, {
         ...updates,
+        validations: updates.validations ? [updates.validations] : undefined,
         updatedBy: userId,
       }, tenantId)
 
@@ -609,7 +565,7 @@ export class FieldTypeService {
 
       // TODO: Check if field type is in use by any content types
 
-      await this.fieldTypeRepo.delete(id, tenantId)
+      await this.fieldTypeRepo.deleteWithTenant(id, tenantId)
 
       // Clear cache
       if (this.options.enableCache) {
@@ -763,5 +719,6 @@ export class FieldTypeService {
   }
 }
 
-// Export singleton instance
-export const fieldTypeService = new FieldTypeService()
+// Note: Singleton instance should be created with proper PrismaClient injection
+// This will be handled by the dependency injection container
+// export const fieldTypeService = new FieldTypeService(prisma)
