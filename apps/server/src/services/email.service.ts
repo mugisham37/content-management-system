@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer"
+import nodemailer, { Transporter } from "nodemailer"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
@@ -76,7 +76,7 @@ export interface EmailStats {
 }
 
 export class EmailService {
-  private transporter: nodemailer.Transporter
+  private transporter!: Transporter
   private options: EmailServiceOptions
   private templates: Map<string, EmailTemplate> = new Map()
   private emailQueue: Array<{ id: string; options: EmailOptions; retries: number }> = []
@@ -110,7 +110,7 @@ export class EmailService {
    */
   private initializeTransporter(): void {
     try {
-      this.transporter = nodemailer.createTransporter({
+      this.transporter = nodemailer.createTransport({
         host: this.options.smtp.host,
         port: this.options.smtp.port,
         secure: this.options.smtp.secure,
