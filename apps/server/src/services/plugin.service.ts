@@ -5,7 +5,7 @@
 
 import { EventEmitter } from 'events'
 import { PrismaClient, Plugin, PluginStatus, Prisma } from '@prisma/client'
-import { PluginRepository } from '../../../packages/database/src/repositories/plugin.repository'
+import { PluginRepository } from '@cms-platform/database/repositories/plugin.repository'
 import { CacheService } from './cache.service'
 import { AuditService } from './audit.service'
 import { NotificationService } from './notification.service'
@@ -15,6 +15,7 @@ import { logger } from '../utils/logger'
 import fs from 'fs/promises'
 import path from 'path'
 import { createHash } from 'crypto'
+import crypto from 'crypto'
 import { Worker } from 'worker_threads'
 import semver from 'semver'
 import vm from 'vm'
@@ -513,20 +514,28 @@ export class PluginService extends EventEmitter {
       })
 
       // Send notification
-      await this.notifications.sendNotification({
-        type: 'PLUGIN_INSTALLED',
-        title: 'Plugin Installed',
-        message: `Plugin "${plugin.name}" has been installed successfully`,
-        userId: options.userId,
-        tenantId: options.tenantId,
-        data: { pluginId: plugin.id, pluginName: plugin.name }
-      })
+      if (options.userId) {
+        await this.notifications.sendNotification({
+          type: 'PLUGIN_INSTALLED',
+          title: 'Plugin Installed',
+          message: `Plugin "${plugin.name}" has been installed successfully`,
+          userId: options.userId,
+          tenantId: options.tenantId,
+          data: { pluginId: plugin.id, pluginName: plugin.name }
+        })
+      }
 
       // Trigger webhook
-      await this.webhooks.triggerWebhook('PLUGIN_INSTALLED', {
-        plugin: plugin,
-        installTime: performance.now() - startTime
-      }, options.tenantId)
+      await this.webhooks.triggerWebhook({
+        id: crypto.randomUUID(),
+        type: 'PLUGIN_INSTALLED',
+        timestamp: new Date(),
+        data: {
+          plugin: plugin,
+          installTime: performance.now() - startTime
+        },
+        tenantId: options.tenantId
+      })
 
       this.emit('pluginInstalled', plugin)
       return plugin
@@ -538,10 +547,11 @@ export class PluginService extends EventEmitter {
       await this.audit.log({
         action: 'plugin.install.failed',
         entityType: 'plugin',
+        entityId: 'unknown',
         userId: options.userId,
         tenantId: options.tenantId,
         details: {
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           options
         }
       })
@@ -599,14 +609,16 @@ export class PluginService extends EventEmitter {
       })
 
       // Send notification
-      await this.notifications.sendNotification({
-        type: 'PLUGIN_UNINSTALLED',
-        title: 'Plugin Uninstalled',
-        message: `Plugin "${plugin.name}" has been uninstalled`,
-        userId: options.userId,
-        tenantId: options.tenantId,
-        data: { pluginName: plugin.name }
-      })
+      if (options.userId) {
+        await this.notifications.sendNotification({
+          type: 'PLUGIN_UNINSTALLED',
+          title: 'Plugin Uninstalled',
+          message: `Plugin "${plugin.name}" has been uninstalled`,
+          userId: options.userId,
+          tenantId: options.tenantId,
+          data: { pluginName: plugin.name }
+        })
+      }
 
       this.emit('pluginUninstalled', plugin)
 
@@ -665,7 +677,7 @@ export class PluginService extends EventEmitter {
       logger.error('Failed to activate plugin:', error)
       
       // Mark as error if activation failed
-      await this.repository.markAsError(id, error.message)
+      await this.repository.markAsError(id, error instanceof Error ? error.message : String(error))
       
       throw error
     }
@@ -732,7 +744,7 @@ export class PluginService extends EventEmitter {
           await this.loadPlugin(plugin)
         } catch (error) {
           logger.error(`Failed to load plugin ${plugin.name}:`, error)
-          await this.repository.markAsError(plugin.id, error.message)
+          await this.repository.markAsError(plugin.id, error instanceof Error ? error.message : String(error))
         }
       }
 
@@ -764,7 +776,7 @@ export class PluginService extends EventEmitter {
         pluginId: plugin.id,
         pluginName: plugin.name,
         version: plugin.version,
-        config: plugin.config || {},
+        config: typeof plugin.config === 'object' && plugin.config !== null ? plugin.config as Record<string, any> : {},
         logger: logger.child({ plugin: plugin.name }),
         cache: this.cache,
         database: this.repository['prisma'],
@@ -865,7 +877,7 @@ export class PluginService extends EventEmitter {
         executionTime,
         success: false,
         hookName,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       })
 
       throw error
@@ -920,7 +932,7 @@ export class PluginService extends EventEmitter {
       }
 
     } catch (error) {
-      errors.push(`Validation error: ${error.message}`)
+      errors.push(`Validation error: ${error instanceof Error ? error.message : String(error)}`)
     }
 
     return {
@@ -961,7 +973,7 @@ export class PluginService extends EventEmitter {
       }
 
     } catch (error) {
-      issues.push(`Security validation failed: ${error.message}`)
+      issues.push(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -982,7 +994,7 @@ export class PluginService extends EventEmitter {
       }
 
     } catch (error) {
-      issues.push(`Performance validation failed: ${error.message}`)
+      issues.push(`Performance validation failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1307,7 +1319,7 @@ export class PluginService extends EventEmitter {
       }
 
       const plugins = await this.repository.findAll()
-      await this.cache.set(cacheKey, plugins, 300) // Cache for 5 minutes
+      await this.cache.set(cacheKey, plugins, { ttl: 300 }) // Cache for 5 minutes
       
       return plugins
     } catch (error) {
@@ -1329,7 +1341,7 @@ export class PluginService extends EventEmitter {
       }
 
       const plugin = await this.repository.findByIdOrThrow(id)
-      await this.cache.set(cacheKey, plugin, 300)
+      await this.cache.set(cacheKey, plugin, { ttl: 300 })
       
       return plugin
     } catch (error) {

@@ -714,4 +714,28 @@ export class PluginRepository extends BaseRepository<Plugin, CreatePluginInput, 
       this.handleError(error, 'uninstall')
     }
   }
+
+  /**
+   * Find all plugins
+   */
+  async findAll(): Promise<Plugin[]> {
+    try {
+      return await this.model.findMany({
+        include: {
+          fieldTypes: {
+            select: {
+              id: true,
+              name: true,
+              displayName: true,
+              dataType: true,
+              uiType: true,
+            },
+          },
+        },
+        orderBy: { name: 'asc' },
+      })
+    } catch (error) {
+      this.handleError(error, 'findAll')
+    }
+  }
 }
