@@ -359,8 +359,15 @@ model Media {
   url          String
   type         MediaType
   
-  // Metadata stored as JSONB for flexibility
-  metadata Json
+  // Explicit fields for better type safety
+  mimeType     String
+  size         Int
+  width        Int?
+  height       Int?
+  duration     Int?
+  
+  // Metadata stored as JSONB for additional flexible data
+  metadata Json @default("{}")
   
   // Organization
   alt     String?
@@ -379,6 +386,8 @@ model Media {
   
   @@map("media")
   @@index([type])
+  @@index([mimeType])
+  @@index([size])
   @@index([tenantId])
   @@index([uploadedById])
   @@index([tags])

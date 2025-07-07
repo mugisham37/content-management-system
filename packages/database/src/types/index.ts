@@ -2,6 +2,9 @@
 // DATABASE TYPES
 // =============================================================================
 
+// Export media types
+export * from './media.types'
+
 // Content Type related types
 export interface ContentType {
   id: string

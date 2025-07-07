@@ -1,4 +1,17 @@
 import { MediaRepository } from "@cms-platform/database/repositories/media.repository"
+import { 
+  MediaFile, 
+  MediaCreateInput, 
+  MediaUpdateInput, 
+  MediaSearchOptions, 
+  MediaSearchResult, 
+  MediaStats,
+  MediaVariant,
+  MediaUploadOptions,
+  ImageProcessingOptions,
+  MediaFolder
+} from "@cms-platform/database/types/media.types"
+import { PrismaClient } from "@prisma/client"
 import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
@@ -32,137 +45,16 @@ export interface MediaServiceOptions {
   }
 }
 
-export interface MediaFile {
-  id: string
-  filename: string
-  originalFilename: string
-  mimeType: string
-  size: number
-  width?: number
-  height?: number
-  duration?: number
-  url: string
-  thumbnailUrl?: string
-  alt?: string
-  title?: string
-  description?: string
-  tags: string[]
-  folder?: string
-  metadata: Record<string, any>
-  variants?: MediaVariant[]
-  tenantId?: string
-  createdAt: Date
-  updatedAt: Date
-  createdBy?: string
-  updatedBy?: string
-}
-
-export interface MediaVariant {
-  id: string
-  name: string
-  url: string
-  width?: number
-  height?: number
-  size: number
-  format: string
-  quality?: number
-  metadata?: Record<string, any>
-}
-
-export interface MediaUploadOptions {
-  folder?: string
-  alt?: string
-  title?: string
-  description?: string
-  tags?: string[]
-  generateThumbnails?: boolean
-  generateVariants?: boolean
-  applyWatermark?: boolean
-  quality?: number
-  tenantId?: string
-  uploadedBy?: string
-}
-
-export interface MediaSearchOptions {
-  page?: number
-  limit?: number
-  search?: string
-  mimeType?: string | string[]
-  folder?: string
-  tags?: string[]
-  dateFrom?: Date
-  dateTo?: Date
-  sizeMin?: number
-  sizeMax?: number
-  sortBy?: string
-  sortOrder?: "asc" | "desc"
-  tenantId?: string
-}
-
-export interface MediaStats {
-  totalFiles: number
-  totalSize: number
-  filesByType: Record<string, number>
-  filesByFolder: Record<string, number>
-  sizeByType: Record<string, number>
-  recentUploads: Array<{
-    id: string
-    filename: string
-    size: number
-    uploadedAt: Date
-    uploadedBy?: string
-  }>
-  topTags: Array<{
-    tag: string
-    count: number
-  }>
-  storageUsage: {
-    used: number
-    available: number
-    percentage: number
-  }
-}
-
-export interface ImageProcessingOptions {
-  width?: number
-  height?: number
-  quality?: number
-  format?: "jpeg" | "png" | "webp" | "avif"
-  fit?: "cover" | "contain" | "fill" | "inside" | "outside"
-  position?: string
-  background?: string
-  blur?: number
-  sharpen?: boolean
-  grayscale?: boolean
-  normalize?: boolean
-  rotate?: number
-  flip?: boolean
-  flop?: boolean
-}
-
-export interface MediaFolder {
-  id: string
-  name: string
-  path: string
-  parentId?: string
-  description?: string
-  isPublic: boolean
-  permissions?: Record<string, string[]>
-  metadata?: Record<string, any>
-  tenantId?: string
-  createdAt: Date
-  updatedAt: Date
-  createdBy?: string
-}
-
 export class MediaService extends EventEmitter {
   private mediaRepo: MediaRepository
   private fileService: FileService
   private options: MediaServiceOptions
+  private prisma: PrismaClient
 
   constructor(options: MediaServiceOptions = {}) {
     super()
-    this.mediaRepo = new MediaRepository()
+    this.prisma = new PrismaClient()
+    this.mediaRepo = new MediaRepository(this.prisma)
     this.fileService = new FileService()
     this.options = {
       enableCache: true,
@@ -204,6 +96,17 @@ export class MediaService extends EventEmitter {
 
     this.setMaxListeners(100)
     logger.info("Media service initialized", this.options)
+  }
+
+  /**
+   * Get MediaType from MIME type
+   */
+  private getMediaTypeFromMimeType(mimeType: string): 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'OTHER' {
+    if (mimeType.startsWith('image/')) return 'IMAGE'
+    if (mimeType.startsWith('video/')) return 'VIDEO'
+    if (mimeType.startsWith('audio/')) return 'AUDIO'
+    if (mimeType.includes('pdf') || mimeType.includes('document') || mimeType.includes('text')) return 'DOCUMENT'
+    return 'OTHER'
   }
 
   /**
@@ -534,25 +437,22 @@ export class MediaService extends EventEmitter {
       }
 
       // Create media record
-      const mediaFile = await this.mediaRepo.create({
+      const mediaFile = await this.mediaRepo.createMedia({
         filename,
-        originalFilename: file.originalname,
+        originalName: file.originalname,
+        path: fileResult.path,
+        url: fileResult.url,
+        type: this.getMediaTypeFromMimeType(file.mimetype),
         mimeType: file.mimetype,
         size: file.size,
-        width: metadata.width,
-        height: metadata.height,
-        url: fileResult.url,
-        thumbnailUrl: thumbnails.find(t => t.name === "medium")?.url,
+        width: metadata.width || null,
+        height: metadata.height || null,
         alt,
-        title: title || file.originalname,
-        description,
+        caption: description,
         tags,
-        folder,
         metadata,
-        variants: thumbnails,
         tenantId,
-        createdBy: uploadedBy,
-        updatedBy: uploadedBy,
+        uploadedById: uploadedBy || '',
       })
 
       // Clear cache
@@ -613,7 +513,7 @@ export class MediaService extends EventEmitter {
         }
       }
 
-      const mediaFile = await this.mediaRepo.findById(id, tenantId)
+      const mediaFile = await this.mediaRepo.findMediaById(id)
 
       // Cache result
       if (this.options.enableCache && mediaFile) {
@@ -651,12 +551,12 @@ export class MediaService extends EventEmitter {
         }
       }
 
-      const result = await this.mediaRepo.search(options)
+      const result = await this.mediaRepo.searchMedia(options)
 
       // Cache result
-      if (this.options.enableCache) {
+      if (this.options.enableCache && result) {
         await cacheService.set(cacheKey, result, {
-          ttl: this.options.cacheTtl / 2, // Shorter TTL for search results
+          ttl: this.options.cacheTtl! / 2, // Shorter TTL for search results
           namespace: options.tenantId,
         })
       }
@@ -685,16 +585,14 @@ export class MediaService extends EventEmitter {
     updatedBy?: string
   ): Promise<MediaFile> {
     try {
-      const existingMedia = await this.mediaRepo.findById(id, tenantId)
+      const existingMedia = await this.mediaRepo.findMediaById(id)
       if (!existingMedia) {
         throw ApiError.notFound("Media file not found")
       }
 
-      const updatedMedia = await this.mediaRepo.update(id, {
+      const updatedMedia = await this.mediaRepo.updateMedia(id, {
         ...updates,
-        updatedBy,
-        updatedAt: new Date(),
-      }, tenantId)
+      })
 
       // Clear cache
       if (this.options.enableCache) {
@@ -751,7 +649,7 @@ export class MediaService extends EventEmitter {
    */
   async deleteMedia(id: string, tenantId?: string, deletedBy?: string): Promise<void> {
     try {
-      const mediaFile = await this.mediaRepo.findById(id, tenantId)
+      const mediaFile = await this.mediaRepo.findMediaById(id)
       if (!mediaFile) {
         throw ApiError.notFound("Media file not found")
       }
@@ -759,23 +657,12 @@ export class MediaService extends EventEmitter {
       // Delete physical file
       try {
         await this.fileService.deleteFile(mediaFile.url)
-        
-        // Delete thumbnails
-        if (mediaFile.variants) {
-          for (const variant of mediaFile.variants) {
-            try {
-              await this.fileService.deleteFile(variant.url)
-            } catch (error) {
-              logger.warn("Failed to delete thumbnail:", error)
-            }
-          }
-        }
       } catch (error) {
         logger.warn("Failed to delete physical file:", error)
       }
 
       // Delete from database
-      await this.mediaRepo.delete(id, tenantId)
+      await this.mediaRepo.delete(id)
 
       // Clear cache
       if (this.options.enableCache) {
@@ -833,9 +720,9 @@ export class MediaService extends EventEmitter {
       const stats = await this.mediaRepo.getStats(tenantId)
 
       // Cache result
-      if (this.options.enableCache) {
+      if (this.options.enableCache && stats) {
         await cacheService.set(cacheKey, stats, {
-          ttl: this.options.cacheTtl / 4, // Shorter TTL for stats
+          ttl: this.options.cacheTtl! / 4, // Shorter TTL for stats
           namespace: tenantId,
         })
       }
@@ -856,7 +743,7 @@ export class MediaService extends EventEmitter {
     tenantId?: string
   ): Promise<{ url: string; metadata: Record<string, any> }> {
     try {
-      const mediaFile = await this.mediaRepo.findById(id, tenantId)
+      const mediaFile = await this.mediaRepo.findMediaById(id)
       if (!mediaFile) {
         throw ApiError.notFound("Media file not found")
       }
@@ -1016,7 +903,7 @@ export class MediaService extends EventEmitter {
     tenantId?: string
   ): Promise<{ url: string; expiresAt: Date }> {
     try {
-      const mediaFile = await this.mediaRepo.findById(id, tenantId)
+      const mediaFile = await this.mediaRepo.findMediaById(id)
       if (!mediaFile) {
         throw ApiError.notFound("Media file not found")
       }
@@ -1095,7 +982,7 @@ export class MediaService extends EventEmitter {
     tenantId?: string
   ): Promise<MediaFile> {
     try {
-      const mediaFile = await this.mediaRepo.findById(id, tenantId)
+      const mediaFile = await this.mediaRepo.findMediaById(id)
       if (!mediaFile) {
         throw ApiError.notFound("Media file not found")
       }
@@ -1110,7 +997,7 @@ export class MediaService extends EventEmitter {
       let image = sharp(mediaFile.url)
 
       if (options.stripMetadata) {
-        image = image.withMetadata(false)
+        image = image.withMetadata({})
       }
 
       switch (options.format) {
@@ -1142,16 +1029,15 @@ export class MediaService extends EventEmitter {
 
       // Update media record with optimized version
       const optimizedMetadata = await this.extractMetadata(optimizedPath, mediaFile.mimeType)
-      const updatedMedia = await this.mediaRepo.update(id, {
+      const updatedMedia = await this.mediaRepo.updateMedia(id, {
         url: optimizedPath,
-        size: optimizedMetadata.fileSize,
         metadata: {
           ...mediaFile.metadata,
           optimized: true,
           optimizationOptions: options,
           originalSize: mediaFile.size,
         },
-      }, tenantId)
+      })
 
       logger.info("Media optimized", {
         id,
@@ -1180,8 +1066,19 @@ export class MediaService extends EventEmitter {
     }
   }> {
     try {
+      let healthStatus: "healthy" | "degraded" | "unhealthy" = "healthy"
+      let storageAvailable = true
+
+      // Test storage availability
+      try {
+        await fs.access("uploads")
+      } catch {
+        storageAvailable = false
+        healthStatus = "degraded"
+      }
+      
       const status = {
-        status: "healthy" as const,
+        status: healthStatus,
         timestamp: new Date().toISOString(),
         features: {
           imageProcessing: this.options.enableImageProcessing!,
@@ -1191,17 +1088,9 @@ export class MediaService extends EventEmitter {
           audit: this.options.enableAudit!,
         },
         storage: {
-          available: true,
+          available: storageAvailable,
           usage: 0,
         },
-      }
-
-      // Test storage availability
-      try {
-        await fs.access("uploads")
-      } catch {
-        status.storage.available = false
-        status.status = "degraded"
       }
 
       return status

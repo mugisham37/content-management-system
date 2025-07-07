@@ -5,9 +5,14 @@
 
 import { PrismaClient, Media, MediaType, Prisma } from '@prisma/client'
 import { BaseRepository } from './base.repository'
-
-export type MediaCreateInput = Prisma.MediaCreateInput
-export type MediaUpdateInput = Prisma.MediaUpdateInput
+import { 
+  MediaFile, 
+  MediaCreateInput, 
+  MediaUpdateInput, 
+  MediaSearchOptions, 
+  MediaSearchResult, 
+  MediaStats 
+} from '../types/media.types'
 
 export interface MediaWithRelations extends Media {
   tenant?: any
@@ -20,6 +25,183 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
 
   constructor(prisma: PrismaClient) {
     super(prisma)
+  }
+
+  /**
+   * Map Prisma Media to MediaFile interface
+   */
+  private mapToMediaFile(media: Media): MediaFile {
+    return {
+      id: media.id,
+      filename: media.filename,
+      originalName: media.originalName,
+      path: media.path,
+      url: media.url,
+      type: media.type,
+      mimeType: media.mimeType,
+      size: media.size,
+      width: media.width || undefined,
+      height: media.height || undefined,
+      duration: media.duration || undefined,
+      alt: media.alt || undefined,
+      caption: media.caption || undefined,
+      tags: media.tags,
+      metadata: media.metadata as Record<string, any>,
+      tenantId: media.tenantId || undefined,
+      uploadedById: media.uploadedById,
+      createdAt: media.createdAt,
+      updatedAt: media.updatedAt,
+    }
+  }
+
+  /**
+   * Create media file
+   */
+  async createMedia(data: MediaCreateInput, include?: Record<string, boolean>): Promise<MediaFile> {
+    try {
+      const media = await this.model.create({
+        data: {
+          ...data,
+          metadata: data.metadata || {},
+        },
+        include,
+      })
+      return this.mapToMediaFile(media)
+    } catch (error) {
+      this.handleError(error, 'createMedia')
+    }
+  }
+
+  /**
+   * Find media by ID
+   */
+  async findMediaById(id: string, include?: Record<string, boolean>): Promise<MediaFile | null> {
+    try {
+      const media = await this.model.findUnique({
+        where: { id },
+        include,
+      })
+      return media ? this.mapToMediaFile(media) : null
+    } catch (error) {
+      this.handleError(error, 'findMediaById')
+    }
+  }
+
+  /**
+   * Update media file
+   */
+  async updateMedia(id: string, data: MediaUpdateInput, include?: Record<string, boolean>): Promise<MediaFile> {
+    try {
+      const media = await this.model.update({
+        where: { id },
+        data: {
+          ...data,
+          metadata: data.metadata !== undefined ? data.metadata : undefined,
+        },
+        include,
+      })
+      return this.mapToMediaFile(media)
+    } catch (error) {
+      this.handleError(error, 'updateMedia')
+    }
+  }
+
+  /**
+   * Search media files with pagination
+   */
+  async searchMedia(options: MediaSearchOptions): Promise<MediaSearchResult> {
+    const { 
+      page = 1, 
+      limit = 10, 
+      search, 
+      type, 
+      mimeType, 
+      tags, 
+      tenantId, 
+      uploadedById,
+      sortBy = 'createdAt', 
+      sortOrder = 'desc' 
+    } = options
+    
+    const skip = (page - 1) * limit
+
+    try {
+      const where: any = {}
+      
+      if (tenantId) where.tenantId = tenantId
+      if (type) where.type = type
+      if (mimeType) where.mimeType = { contains: mimeType, mode: 'insensitive' }
+      if (uploadedById) where.uploadedById = uploadedById
+      if (tags && tags.length > 0) where.tags = { hasEvery: tags }
+      
+      if (search) {
+        where.OR = [
+          { filename: { contains: search, mode: 'insensitive' } },
+          { originalName: { contains: search, mode: 'insensitive' } },
+          { alt: { contains: search, mode: 'insensitive' } },
+          { caption: { contains: search, mode: 'insensitive' } }
+        ]
+      }
+
+      const [media, total] = await Promise.all([
+        this.model.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { [sortBy]: sortOrder },
+        }),
+        this.model.count({ where })
+      ])
+
+      return {
+        media: media.map(this.mapToMediaFile.bind(this)),
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    } catch (error) {
+      this.handleError(error, 'searchMedia')
+    }
+  }
+
+  /**
+   * Get media statistics
+   */
+  async getStats(tenantId?: string): Promise<MediaStats> {
+    try {
+      const where = tenantId ? { tenantId } : {}
+      
+      const [total, media] = await Promise.all([
+        this.model.count({ where }),
+        this.model.findMany({
+          where,
+          select: { type: true, size: true, mimeType: true }
+        })
+      ])
+
+      const totalSize = media.reduce((sum, m) => sum + m.size, 0)
+      
+      const filesByType = media.reduce((acc, m) => {
+        acc[m.type] = (acc[m.type] || 0) + 1
+        return acc
+      }, {} as Record<string, number>)
+
+      const sizeByType = media.reduce((acc, m) => {
+        acc[m.type] = (acc[m.type] || 0) + m.size
+        return acc
+      }, {} as Record<string, number>)
+
+      return {
+        totalFiles: total,
+        totalSize,
+        filesByType,
+        sizeByType,
+        averageSize: total > 0 ? totalSize / total : 0
+      }
+    } catch (error) {
+      this.handleError(error, 'getStats')
+    }
   }
 
   /**
@@ -39,10 +221,7 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
    */
   async findByMimeType(mimeType: string, tenantId?: string): Promise<Media[]> {
     const where: any = { 
-      metadata: {
-        path: ['mimeType'],
-        string_contains: mimeType,
-      }
+      mimeType: { contains: mimeType, mode: 'insensitive' }
     }
     if (tenantId) {
       where.tenantId = tenantId
@@ -77,50 +256,6 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
     }
 
     return this.findMany(where, undefined, { createdAt: 'desc' })
-  }
-
-  /**
-   * Search media
-   */
-  async search(
-    query: string, 
-    tenantId?: string,
-    options: {
-      type?: MediaType
-      limit?: number
-      offset?: number
-    } = {}
-  ): Promise<Media[]> {
-    const { type, limit = 50, offset = 0 } = options
-
-    const where: any = {
-      OR: [
-        { filename: { contains: query, mode: 'insensitive' } },
-        { originalName: { contains: query, mode: 'insensitive' } },
-        { alt: { contains: query, mode: 'insensitive' } },
-        { caption: { contains: query, mode: 'insensitive' } },
-        { tags: { has: query } },
-      ],
-    }
-
-    if (type) {
-      where.type = type
-    }
-
-    if (tenantId) {
-      where.tenantId = tenantId
-    }
-
-    try {
-      return await this.model.findMany({
-        where,
-        take: limit,
-        skip: offset,
-        orderBy: { createdAt: 'desc' },
-      })
-    } catch (error) {
-      this.handleError(error, 'search')
-    }
   }
 
   /**
@@ -161,8 +296,7 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
     tenantId?: string
   ): Promise<Media[]> {
     const where: any = {
-      metadata: {
-        path: ['size'],
+      size: {
         gte: minSize,
         lte: maxSize,
       },
@@ -206,73 +340,6 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
     } = {}
   ): Promise<MediaWithRelations[]> {
     return this.findMany(where, includeRelations) as Promise<MediaWithRelations[]>
-  }
-
-  /**
-   * Get media statistics
-   */
-  async getStatistics(tenantId?: string): Promise<{
-    total: number
-    totalSize: number
-    byType: Record<string, number>
-    byMimeType: Record<string, number>
-    averageSize: number
-  }> {
-    const where: any = {}
-    if (tenantId) {
-      where.tenantId = tenantId
-    }
-
-    try {
-      const [
-        total,
-        typeStats,
-        allMedia,
-      ] = await Promise.all([
-        this.count(where),
-        this.prisma.media.groupBy({
-          by: ['type'],
-          where,
-          _count: { _all: true },
-        }),
-        this.prisma.media.findMany({
-          where,
-          select: { metadata: true },
-        }),
-      ])
-
-      // Calculate size statistics from metadata
-      let totalSize = 0
-      const byMimeType: Record<string, number> = {}
-      
-      allMedia.forEach(media => {
-        const metadata = media.metadata as any
-        if (metadata?.size) {
-          totalSize += metadata.size
-        }
-        if (metadata?.mimeType) {
-          byMimeType[metadata.mimeType] = (byMimeType[metadata.mimeType] || 0) + 1
-        }
-      })
-
-      const averageSize = total > 0 ? totalSize / total : 0
-
-      // Group by type
-      const byType: Record<string, number> = {}
-      typeStats.forEach(stat => {
-        byType[stat.type] = stat._count._all
-      })
-
-      return {
-        total,
-        totalSize,
-        averageSize,
-        byType,
-        byMimeType,
-      }
-    } catch (error) {
-      this.handleError(error, 'getStatistics')
-    }
   }
 
   /**
@@ -323,10 +390,7 @@ export class MediaRepository extends BaseRepository<Media, MediaCreateInput, Med
     }
     
     if (size) {
-      where.metadata = {
-        path: ['size'],
-        equals: size,
-      }
+      where.size = size
     }
 
     if (tenantId) {
