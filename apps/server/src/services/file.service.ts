@@ -9,6 +9,7 @@ import { ApiError } from "../utils/errors"
 import { logger } from "../utils/logger"
 import { cacheService } from "./cache.service"
 import { auditService } from "./audit.service"
+import { toStringForParsing, parseIntegerSafely } from "../utils/type-safety"
 import type { Express } from "express"
 
 export interface FileUploadResult {
@@ -524,8 +525,8 @@ export class FileService {
           resolve({
             width: videoStream?.width || 0,
             height: videoStream?.height || 0,
-            bitrate: Number.parseInt(videoStream?.bit_rate || "0"),
-            fps: this.parseFrameRate(videoStream?.r_frame_rate || "0"),
+            bitrate: parseIntegerSafely(videoStream?.bit_rate),
+            fps: this.parseFrameRate(toStringForParsing(videoStream?.r_frame_rate)),
             format: metadata?.format.format_name,
           })
         }
@@ -534,10 +535,14 @@ export class FileService {
   }
 
   /**
-   * Parse frame rate string
+   * Parse frame rate string with enhanced type safety
    */
-  private parseFrameRate(frameRate: string | number): number {
+  private parseFrameRate(frameRate: string | number | null | undefined): number {
     try {
+      if (frameRate === null || frameRate === undefined) {
+        return 0
+      }
+      
       const frameRateStr = String(frameRate)
       if (frameRateStr.includes("/")) {
         const [num, den] = frameRateStr.split("/").map(Number)
@@ -561,8 +566,8 @@ export class FileService {
           const audioStream = metadata?.streams.find((s) => s.codec_type === "audio")
           resolve({
             duration: metadata?.format.duration || 0,
-            bitrate: Number.parseInt(audioStream?.bit_rate || "0"),
-            sampleRate: Number.parseInt(audioStream?.sample_rate || "0"),
+            bitrate: parseIntegerSafely(audioStream?.bit_rate),
+            sampleRate: parseIntegerSafely(audioStream?.sample_rate),
             channels: audioStream?.channels || 0,
             format: metadata?.format.format_name,
           })

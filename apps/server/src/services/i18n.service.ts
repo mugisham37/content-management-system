@@ -9,6 +9,7 @@ import { watch, FSWatcher } from "fs"
 import path from "path"
 import { EventEmitter } from "events"
 import * as yaml from "js-yaml"
+import { ensureString } from "../utils/type-safety"
 
 export interface I18nServiceOptions {
   defaultLocale?: string

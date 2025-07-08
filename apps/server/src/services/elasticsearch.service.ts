@@ -1,8 +1,3 @@
-// =============================================================================
-// ELASTICSEARCH SERVICE
-// =============================================================================
-// High-level Elasticsearch integration for content management system
-
 import { Client } from "@elastic/elasticsearch"
 
 let esClient: Client | null = null
