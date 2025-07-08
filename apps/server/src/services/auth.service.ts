@@ -1,13 +1,12 @@
 import type { IUser } from "../interfaces/user.interface"
-import { ApiError } from "../utils/api-error"
+import { ApiError } from "../utils/errors"
 import logger from "../utils/logger"
-import type { DatabaseConnection } from "../utils/database"
+import { prisma } from "@cms-platform/database/client"
+import { extractErrorInfo } from "../utils/error-guards"
 
 export class AuthService {
-  private db: DatabaseConnection
-
-  constructor(database: DatabaseConnection) {
-    this.db = database
+  constructor() {
+    // Using Prisma client directly from the database package
   }
 
   /**
@@ -100,13 +99,13 @@ export class AuthService {
         WHERE u.id = $1 AND u.deleted_at IS NULL
       `
 
-      const result = await this.db.query(query, [userId])
+      const result = await prisma.$queryRawUnsafe(query, userId)
 
-      if (!result.rows || result.rows.length === 0) {
+      if (!Array.isArray(result) || result.length === 0) {
         throw ApiError.notFound("User not found")
       }
 
-      const userRow = result.rows[0]
+      const userRow = result[0] as any
 
       // Structure the response with nested tenant object
       const userProfile = {
@@ -149,10 +148,11 @@ export class AuthService {
         throw error
       }
 
+      const errorInfo = extractErrorInfo(error)
       logger.error("Get user profile failed - Database Error", {
         userId,
-        error: error.message,
-        stack: error.stack,
+        error: errorInfo.message,
+        stack: errorInfo.stack,
         executionTime,
       })
 
@@ -220,9 +220,9 @@ export class AuthService {
         ORDER BY u.created_at DESC
       `
 
-      const result = await this.db.query(query, userIds)
+      const result = await prisma.$queryRawUnsafe(query, ...userIds)
 
-      const userProfiles = result.rows.map((userRow) => {
+      const userProfiles = (result as any[]).map((userRow: any) => {
         const userProfile = {
           ...userRow,
           tenant: userRow.tenant_id
@@ -264,10 +264,11 @@ export class AuthService {
         throw error
       }
 
+      const errorInfo = extractErrorInfo(error)
       logger.error("Get user profiles failed - Database Error", {
         userIds: userIds.slice(0, 5),
-        error: error.message,
-        stack: error.stack,
+        error: errorInfo.message,
+        stack: errorInfo.stack,
         executionTime,
       })
 
@@ -291,12 +292,13 @@ export class AuthService {
         ) as exists
       `
 
-      const result = await this.db.query(query, [userId])
-      return result.rows[0]?.exists || false
+      const result = await prisma.$queryRawUnsafe(query, userId)
+      return (result as any[])[0]?.exists || false
     } catch (error) {
+      const errorInfo = extractErrorInfo(error)
       logger.error("Check user active status failed", {
         userId,
-        error: error.message,
+        error: errorInfo.message,
       })
       return false
     }
@@ -319,13 +321,13 @@ export class AuthService {
         WHERE id = $1 AND is_active = true AND deleted_at IS NULL
       `
 
-      const result = await this.db.query(query, [userId])
+      const result = await prisma.$queryRawUnsafe(query, userId)
 
-      if (!result.rows || result.rows.length === 0) {
+      if (!Array.isArray(result) || result.length === 0) {
         return null
       }
 
-      const user = result.rows[0]
+      const user = result[0] as any
       return {
         id: user.id,
         email: user.email,
@@ -333,9 +335,10 @@ export class AuthService {
         tenantId: user.tenant_id,
       }
     } catch (error) {
+      const errorInfo = extractErrorInfo(error)
       logger.error("Get user basic info failed", {
         userId,
-        error: error.message,
+        error: errorInfo.message,
       })
       return null
     }
@@ -362,10 +365,11 @@ export class AuthService {
         RETURNING id
       `
 
-      const params = ipAddress ? [userId, ipAddress] : [userId]
-      const result = await this.db.query(query, params)
+      const result = ipAddress 
+        ? await prisma.$queryRawUnsafe(query, userId, ipAddress)
+        : await prisma.$queryRawUnsafe(query, userId)
 
-      const success = result.rows.length > 0
+      const success = Array.isArray(result) && result.length > 0
 
       if (success) {
         logger.info("User last login updated", { userId, ipAddress })
@@ -373,10 +377,11 @@ export class AuthService {
 
       return success
     } catch (error) {
+      const errorInfo = extractErrorInfo(error)
       logger.error("Update last login failed", {
         userId,
         ipAddress,
-        error: error.message,
+        error: errorInfo.message,
       })
       return false
     }
